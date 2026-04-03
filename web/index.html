@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+	<meta charset="UTF-8">
+	<meta http-equiv="Content-Security-Policy" content="default-src 'none';
+               script-src  'unsafe-inline' https://cdnjs.cloudflare.com;
+               style-src   'unsafe-inline' https://cdnjs.cloudflare.com;
+               font-src    https://cdnjs.cloudflare.com data:;
+               worker-src  blob: data:;
+               img-src     data: blob: https:;
+               connect-src https://cdnjs.cloudflare.com;">
+	<link rel="stylesheet" href="./style.css">
+</head>
+
+<body>
+
+	<!-- Left Panel -->
+	<div id="left-panel">
+		<div id="left-buttons">
+			<button class="btn" id="btn-add">&#xFF0B;&#x2002;Add Stored Procedure</button>
+			<button class="btn secondary" id="btn-view">&#x2398;&#x2002;View Change Script</button>
+		</div>
+		<div id="mini-map-label">Procedures</div>
+		<div id="mini-map">
+			<div class="mini-map-empty">No procedures added yet.</div>
+		</div>
+	</div>
+
+	<!-- Main Area -->
+	<div id="main-area">
+		<div id="editor-header">
+			<span id="proc-title">No procedure selected</span>
+			<button id="toggle-diff">&#x25C0; Hide diff</button>
+		</div>
+		<div id="validation-banner"></div>
+		<div id="no-selection">Add a stored procedure to get started.</div>
+		<div id="monaco-wrapper">
+			<div id="diff-container"></div>
+			<div id="plain-container" style="display:none"></div>
+		</div>
+	</div>
+
+	<!-- Context menu (shared for all proc items) -->
+	<div id="context-menu">
+		<div class="ctx-item" id="ctx-refetch">Re-fetch original from database</div>
+		<div class="ctx-item" id="ctx-rename">Rename</div>
+		<div class="ctx-separator"></div>
+		<div class="ctx-item danger" id="ctx-remove">Remove from change script</div>
+	</div>
+
+	<!-- Add / Create Procedure Dialog -->
+	<div id="search-overlay">
+		<div id="search-box">
+
+			<!-- View 1: Search existing DB procedures -->
+			<div id="search-view">
+				<div id="search-header">
+					<input id="search-input" type="text" placeholder="Search stored procedures&#x2026;"
+						autocomplete="off">
+					<button id="search-close" title="Close">&#x2715;</button>
+				</div>
+				<div id="search-results"></div>
+				<div id="search-footer">
+					<button id="btn-create-new">&plus; Create New Stored Procedure</button>
+				</div>
+			</div>
+
+			<!-- View 2: Create new procedure -->
+			<div id="create-view">
+				<div id="create-title">Create New Stored Procedure</div>
+				<input id="create-input" type="text" placeholder="e.g. uspMyNewProcedure" autocomplete="off">
+				<div id="create-hint">The name will be used in both the CREATE PROCEDURE body and the rollback DROP
+					stub.</div>
+				<div id="create-error"></div>
+				<div id="create-actions">
+					<button class="btn" id="btn-create-confirm">Create</button>
+					<button class="btn secondary" id="btn-create-cancel">&#x2190; Back</button>
+				</div>
+			</div>
+
+		</div>
+	</div>
+
+	<script>
+		window.MonacoEnvironment = {
+			getWorkerUrl: function () {
+				var base = 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/';
+				return 'data:text/javascript;charset=utf-8,' + encodeURIComponent(
+					'self.MonacoEnvironment={baseUrl:"' + base + '"};' +
+					'importScripts("' + base + 'vs/base/worker/workerMain.js");'
+				);
+			}
+		};
+	</script>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js"></script>
+	<script src="./script.js"></script>
+</body>
+
+</html>
