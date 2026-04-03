@@ -202,6 +202,37 @@ body {
 	background: var(--vscode-toolbar-hoverBackground, #333);
 }
 
+/* Per-proc option toggles (showDiff, editable) shown beside the hide-rollback button */
+.header-toggle {
+	flex-shrink: 0;
+	background: none;
+    border: 1px solid var(--vscode-focusBorder, #007fd4);
+    color: var(--vscode-foreground, #007fd4);
+	border-radius: 3px;
+	padding: 2px 8px;
+	cursor: pointer;
+	font-size: 11px;
+	line-height: 1.5;
+    opacity: 0.5;
+}
+
+.header-toggle svg {
+    height: 0.5rem;
+    transform: scale(2.25);
+    margin-right: 0.25rem;
+    fill: currentColor;
+}
+
+.header-toggle:hover {
+    opacity: 1;
+}
+
+.header-toggle.active {
+    border-color: var(--vscode-inputValidation-infoBorder, #555);
+    color: var(--vscode-inputValidation-infoBorder, #888);
+    opacity: 1;
+}
+
 #no-selection {
 	flex: 1;
 	display: flex;
@@ -414,17 +445,22 @@ body {
 	left: unset !important;
 }
 
-/* ── Suppress all diff decorations for new procedures ── */
-#diff-container.no-diff .line-delete,
-#diff-container.no-diff .line-insert,
-#diff-container.no-diff .char-delete,
-#diff-container.no-diff .char-insert,
-#diff-container.no-diff .diagonal-fill,
-#diff-container.no-diff .cldr,
-#diff-container.no-diff .cdwi {
-	background: transparent !important;
-	border: none !important;
-	outline: none !important;
+/* ── Split view (showDiff:false + rollback visible) ──────────────────────── */
+#split-container {
+	position: absolute;
+	inset: 0;
+	display: flex;  /* overridden to none when hidden */
+}
+
+#split-left,
+#split-right {
+	flex: 1;
+	min-width: 0;
+	position: relative;
+}
+
+#split-right {
+	border-left: 1px solid var(--vscode-panel-border, #3c3c3c);
 }
 
 /* ── Validation error banner ─────────────────────── */

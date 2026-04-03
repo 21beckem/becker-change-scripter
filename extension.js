@@ -472,13 +472,17 @@ class SqlChangeScriptEditorProvider {
 
 		let procedures = parsed.toProcedureRecords();
 		let suppressCnt = 0;
+		let switchToLastIndex = false;
 
-		const postInit = () =>
+		const postInit = () => {
 			panel.webview.postMessage({
 				type: 'init',
 				procedures,
+				switchToIdx: (switchToLastIndex) ? procedures.length - 1 : undefined,
 				rollbackVisible: context.globalState.get('rollbackVisible', true),
 			});
+			switchToLastIndex = false;
+		}
 
 		/**
 		 * Apply a new procedures array to the document (for structural changes only —
@@ -505,14 +509,15 @@ class SqlChangeScriptEditorProvider {
 		};
 
 		// Detect external edits (e.g. user edits raw SQL in a plain-text tab).
-		const docSub = vscode.workspace.onDidChangeTextDocument(e => {
+		const refreshFromDocument = (e=null) => {
 			if (suppressCnt > 0) return;
-			if (e.document.uri.toString() !== document.uri.toString()) return;
+			if (e && e.document.uri.toString() !== document.uri.toString()) return;
 			const reparsed = ChangeScript.fromString(document.getText());
 			if (reparsed === null) return;  // invalid edit — ignore, don't clobber in-memory state
 			procedures = reparsed.toProcedureRecords();
 			postInit();
-		});
+		}
+		const docSub = vscode.workspace.onDidChangeTextDocument(refreshFromDocument);
 
 		// Flush debounced edits before the file is written to disk.
 		// This is the only path that writes edited procedure content to the file.
@@ -556,6 +561,24 @@ class SqlChangeScriptEditorProvider {
 					break;
 				}
 
+				// User edited the original/rollback side (only when editable:true is set).
+				case 'editOriginal': {
+					const p = procedures.find(x => x.name === msg.name);
+					if (!p) break;
+					p.original = msg.body;
+					break;
+				}
+
+				// User toggled showDiff or editable for a proc — persist to file.
+				case 'setOption': {
+					const p = procedures.find(x => x.name === msg.name);
+					if (!p) break;
+					p.rollbackOptions = Object.assign({}, p.rollbackOptions || {}, { [msg.option]: msg.value });
+					p[msg.option] = msg.value;
+					await applyEdit(procedures);
+					break;
+				}
+
 				case 'searchProcedures': {
 					const results = await searchProcedures(msg.query);
 					panel.webview.postMessage({ type: 'searchResults', results });
@@ -569,7 +592,8 @@ class SqlChangeScriptEditorProvider {
 						name: msg.name, original: rawBody, edited: rawBody, isNew: false,
 						updateOptions: {}, rollbackOptions: {},
 					}]);
-					postInit();
+					switchToLastIndex = true;
+					refreshFromDocument();
 					break;
 				}
 
@@ -583,9 +607,10 @@ class SqlChangeScriptEditorProvider {
 					await applyEdit([...procedures, {
 						name, original: rollbackBlock, edited: createBlock, isNew: true,
 						// New procs have no meaningful diff — store showDiff:false on the update block.
-						updateOptions: { showDiff: false }, rollbackOptions: {},
+						updateOptions: {}, rollbackOptions: { showDiff: false },
 					}]);
-					postInit();
+					switchToLastIndex = true;
+					refreshFromDocument();
 					break;
 				}
 
@@ -602,7 +627,7 @@ class SqlChangeScriptEditorProvider {
 					await applyEdit(procedures.map(p =>
 						p.name === msg.name
 							? {
-								name: msg.name, original: rawBody, edited: rawBody, isNew: false,
+								name: msg.name, original: rawBody, edited: p.edited, isNew: false,
 								updateOptions: {}, rollbackOptions: {}
 							}
 							: p
