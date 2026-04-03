@@ -7,9 +7,9 @@
 
 		var vscode = acquireVsCodeApi();
 
-		// diffVisible is seeded from the extension host's globalState via the first
+		// rollbackVisible is seeded from the extension host's globalState via the first
 		// 'init' message. We keep a local copy here for immediate toggle response.
-		var diffVisible = true; // overwritten on first 'init'
+		var rollbackVisible = true; // overwritten on first 'init'
 
 		// ── Runtime state ──────────────────────────────────
 		/** @type {{ name: string, original: string, edited: string, isNew: boolean }[]} */
@@ -78,7 +78,7 @@
 			renderWhitespace: 'selection',
 		});
 
-		// diffVisible is applied when the first 'init' message arrives from the host.
+		// rollbackVisible is applied when the first 'init' message arrives from the host.
 
 		// ── Sync edits to extension host (debounced) ────────
 		var editTimer = null;
@@ -98,17 +98,17 @@
 
 		// ── Toggle diff / plain ─────────────────────────────
 		toggleBtn.addEventListener('click', function () {
-			diffVisible = !diffVisible;
-			vscode.postMessage({ type: 'saveDiffState', diffVisible: diffVisible });
-			applyDiffVisible(diffVisible, true);
+			rollbackVisible = !rollbackVisible;
+			vscode.postMessage({ type: 'saveDiffState', rollbackVisible: rollbackVisible });
+			applyRollbackVisible(rollbackVisible, true);
 		});
 
-		function applyDiffVisible(visible, triggerLayout) {
+		function applyRollbackVisible(visible, triggerLayout) {
 			diffContainer.style.display = visible ? 'block' : 'none';
 			plainContainer.style.display = visible ? 'none' : 'block';
 			toggleBtn.innerHTML = visible
-				? '&#x25C0; Hide diff'
-				: '&#x25B6; Show diff';
+				? '&#x25C0; Hide Rollback'
+				: '&#x25B6; Show Rollback';
 			if (triggerLayout) {
 				setTimeout(function () {
 					if (visible) diffEditor.layout();
@@ -155,7 +155,7 @@
 			// Use the per-proc showDiff option to control diff/plain display.
 			// If the proc doesn't want a diff (new procs default to showDiff:false),
 			// collapse into single-pane view without decorations.
-			var shouldShowDiff = (proc.showDiff !== false) && diffVisible;
+			var shouldShowDiff = (proc.showDiff !== false) && rollbackVisible;
 			diffContainer.classList.toggle('no-diff', !shouldShowDiff);
 			plainEditor.updateOptions({ readOnly: !isEditable });
 
@@ -346,9 +346,9 @@
 
 				case 'init': {
 					// Seed diff visibility from extension host globalState on (re)load.
-					if (typeof data.diffVisible === 'boolean' && data.diffVisible !== diffVisible) {
-						diffVisible = data.diffVisible;
-						applyDiffVisible(diffVisible, false);
+					if (typeof data.rollbackVisible === 'boolean' && data.rollbackVisible !== rollbackVisible) {
+						rollbackVisible = data.rollbackVisible;
+						applyRollbackVisible(rollbackVisible, false);
 					}
 					var prevName = (currentIdx >= 0 && procedures[currentIdx])
 						? procedures[currentIdx].name : null;

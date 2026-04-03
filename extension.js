@@ -477,7 +477,7 @@ class SqlChangeScriptEditorProvider {
 			panel.webview.postMessage({
 				type: 'init',
 				procedures,
-				diffVisible: context.globalState.get('diffVisible', true),
+				rollbackVisible: context.globalState.get('rollbackVisible', true),
 			});
 
 		/**
@@ -538,7 +538,7 @@ class SqlChangeScriptEditorProvider {
 			switch (msg.type) {
 
 				case 'saveDiffState': {
-					context.globalState.update('diffVisible', msg.diffVisible);
+					context.globalState.update('rollbackVisible', msg.rollbackVisible);
 					break;
 				}
 
