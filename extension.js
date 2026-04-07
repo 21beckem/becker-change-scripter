@@ -209,8 +209,8 @@ class ChangePair {
 	 * @returns {ChangePair}
 	 */
 	static fromBlocks(updateBlock, rollbackBlock) {
-		const nameFromOption = updateBlock.getOwnOption('name')
-			|| rollbackBlock.getOwnOption('name');
+		const nameFromOption = rollbackBlock.getOwnOption('name')
+			|| updateBlock.getOwnOption('name');
 		const name = nameFromOption
 			|| ChangePair.#extractName(updateBlock.rawText)
 			|| ChangePair.#extractName(rollbackBlock.rawText)
@@ -769,8 +769,18 @@ class SqlChangeScriptEditorProvider {
 					await applyEdit(procedures.map(x =>
 						x.name === oldName
 							? {
-								name: n, original: newOriginal, edited: newEdited, isNew: true,
-								updateOptions: x.updateOptions || {}, rollbackOptions: x.rollbackOptions || {}
+								name: n,
+								original: newOriginal,
+								edited: newEdited,
+								isNew: x.isNew,
+								updateOptions: {
+									...(x.updateOptions || {}),
+									name: n
+								},
+								rollbackOptions: {
+									...(x.rollbackOptions || {}),
+									name: n
+								}
 							}
 							: x
 					));

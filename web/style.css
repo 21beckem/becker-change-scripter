@@ -108,6 +108,7 @@ body {
 .dot {
 	width: 6px;
 	height: 6px;
+	margin: 0 3px;
 	border-radius: 50%;
 	flex-shrink: 0;
 	display: inline-block;
@@ -134,6 +135,8 @@ body {
 	font-size: 13px;
 	line-height: 1;
 	padding: 0 1px;
+	width: 6px;
+	margin-right: 6px;
 }
 
 .proc-item:hover .drag-handle {
@@ -234,6 +237,7 @@ body {
     border-color: var(--vscode-inputValidation-infoBorder, #555);
     color: var(--vscode-inputValidation-infoBorder, #888);
     opacity: 1;
+	cursor: pointer;
 }
 
 #no-selection {
