@@ -66,7 +66,24 @@ function makeNewProcedure(name) {
 	}
 }
 
-// ─── Parser / Serialiser ──────────────────────────────────────────────────────
+/**
+ * Get a list of all table names from the database.
+ * @returns {Promise<string[]>}
+ */
+async function searchTables(query) {
+	// TODO: replace with actual call to modules/Database.js
+	const dummy = [
+		'Activity', 'ActivityHistory',
+		'Contact', 'ContactHistory',
+		'Order', 'OrderHistory',
+		'Product', 'ProductHistory',
+		'User', 'UserHistory',
+	];
+	const q = (query || '').toLowerCase();
+	return dummy.filter(n => n.toLowerCase().includes(q));
+}
+
+
 
 const DELIM_CHANGE_HEADER = '----  #Chiasm Change# ----';
 const DELIM_CHANGE_START = '----  #Change Start#  ----';
@@ -118,8 +135,10 @@ class ChangeBlock {
 		const optSection = str.slice(hIdx + DELIM_CHANGE_HEADER.length, sIdx);
 		const options = {};
 		for (const line of optSection.split('\n')) {
-			const m = line.match(/^----\s+([\w]+):\s*(true|false)\s*$/);
-			if (m) options[m[1]] = m[2] === 'true';
+			const boolM = line.match(/^----\s+([\w]+):\s*(true|false)\s*$/);
+			if (boolM) { options[boolM[1]] = boolM[2] === 'true'; continue; }
+			const strM  = line.match(/^----\s+([\w]+):\s*(.+?)\s*$/);
+			if (strM)  options[strM[1]] = strM[2];
 		}
 
 		const rawText = str.slice(sIdx + DELIM_CHANGE_START.length, eIdx).trim();
@@ -190,7 +209,10 @@ class ChangePair {
 	 * @returns {ChangePair}
 	 */
 	static fromBlocks(updateBlock, rollbackBlock) {
-		const name = ChangePair.#extractName(updateBlock.rawText)
+		const nameFromOption = updateBlock.getOwnOption('name')
+			|| rollbackBlock.getOwnOption('name');
+		const name = nameFromOption
+			|| ChangePair.#extractName(updateBlock.rawText)
 			|| ChangePair.#extractName(rollbackBlock.rawText)
 			|| 'Unknown';
 		return new ChangePair(name, updateBlock, rollbackBlock);
@@ -581,7 +603,60 @@ class SqlChangeScriptEditorProvider {
 
 				case 'searchProcedures': {
 					const results = await searchProcedures(msg.query);
-					panel.webview.postMessage({ type: 'searchResults', results });
+					panel.webview.postMessage({ type: 'procSearchResults', results });
+					break;
+				}
+
+				case 'searchTables': {
+					const results = await searchTables(msg.query);
+					panel.webview.postMessage({ type: 'tableSearchResults', results });
+					break;
+				}
+
+				// Create a blank custom change (showDiff:false, editable:true on both sides).
+				case 'createCustomChange': {
+					// Generate a unique name: "Custom Change N"
+					const customNames = procedures
+						.map(p => p.name.match(/^Custom Change (\d+)$/))
+						.filter(Boolean)
+						.map(m => parseInt(m[1], 10));
+					const nextN = customNames.length ? Math.max(...customNames) + 1 : 1;
+					const name  = `Custom Change ${nextN}`;
+					await applyEdit([...procedures, {
+						name,
+						original: '',
+						edited:   '',
+						isNew:    true,
+						updateOptions:  { name, showDiff: false, editable: true },
+						rollbackOptions: { name, showDiff: false, editable: true },
+					}]);
+					switchToLastIndex = true;
+					refreshFromDocument();
+					break;
+				}
+
+				// Create a column + history table change (showDiff:false, editable:false).
+				case 'createColumnChange': {
+					const { table, columnName, columnType, defaultVal } = msg;
+					const name = `Add ${columnName} to ${table}`;
+					// Ensure name is unique
+					if (procedures.some(p => p.name === name)) {
+						vscode.window.showWarningMessage(`A change named "${name}" already exists.`);
+						break;
+					}
+					// TODO: populate edited/original with real SQL via modules/Database.js
+					const updateSql  = `-- TODO: Add column ${columnName} (${columnType}) to ${table}\n-- defaultVal: ${defaultVal || 'none'}`;
+					const rollbackSql = `-- TODO: Rollback column ${columnName} from ${table}`;
+					await applyEdit([...procedures, {
+						name,
+						original: rollbackSql,
+						edited:   updateSql,
+						isNew:    true,
+						updateOptions:  { name, showDiff: false, editable: false },
+						rollbackOptions: { name, showDiff: false, editable: false },
+					}]);
+					switchToLastIndex = true;
+					refreshFromDocument();
 					break;
 				}
 
