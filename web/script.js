@@ -29,6 +29,7 @@
 			splitRight           = $('split-right'),
 			procTitle            = $('proc-title'),
 			toggleBtn            = $('toggle-diff'),
+			btnGenerateRollback  = $('btn-generate-rollback'),
 			btnShowDiff          = $('btn-toggle-show-diff'),
 			btnEditable          = $('btn-toggle-editable'),
 			validationBanner     = $('validation-banner'),
@@ -130,6 +131,7 @@
 			var show = rollbackVisible && currentIdx >= 0 && proc;
 			btnShowDiff.style.display = show ? '' : 'none';
 			btnEditable.style.display = show ? '' : 'none';
+			btnGenerateRollback.style.display = show ? '' : 'none';
 			if (!show) return;
 			var showDiff = proc.showDiff !== false;
 			var editable = proc.editable === true;
@@ -137,7 +139,14 @@
 			btnShowDiff.classList.toggle('active', showDiff);
 			btnEditable.querySelector('span').textContent = 'Rollback: ' + (editable ? 'Editable' : 'Read-only');
 			btnEditable.classList.toggle('active', editable);
+			btnGenerateRollback.disabled = !editable;
 		}
+
+		// ── Button: Generate Rollback ───────────────────────────────────────────
+		btnGenerateRollback.addEventListener('click', function () {
+			var proc   = procedures[currentIdx];
+			vscode.postMessage({ type: 'generateRollbackScript', name: proc.name });
+		});
 
 		// ── Toggle: Show Diff ───────────────────────────────────────────────────
 		btnShowDiff.addEventListener('click', function () {

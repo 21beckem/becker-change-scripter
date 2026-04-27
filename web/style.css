@@ -209,7 +209,8 @@ body {
 }
 
 /* Per-proc option toggles (showDiff, editable) shown beside the hide-rollback button */
-.header-toggle {
+.header-toggle,
+.header-btn {
 	flex-shrink: 0;
 	background: none;
     border: 1px solid var(--vscode-focusBorder, #007fd4);
@@ -222,22 +223,35 @@ body {
     opacity: 0.5;
 }
 
-.header-toggle svg {
+.header-toggle svg,
+.header-btn svg {
     height: 0.5rem;
     transform: scale(2.25);
     margin-right: 0.25rem;
     fill: currentColor;
 }
 
-.header-toggle:hover {
-    opacity: 1;
-}
-
 .header-toggle.active {
     border-color: var(--vscode-inputValidation-infoBorder, #555);
     color: var(--vscode-inputValidation-infoBorder, #888);
-    opacity: 1;
+    opacity: 0.8;
 	cursor: pointer;
+}
+
+.header-btn:not(:disabled) {
+    border-color: #00cc2694;
+    color: #00cc2694;
+	opacity: 0.8;
+	cursor: pointer;
+}
+.header-btn:disabled {
+	cursor: not-allowed;
+	opacity: 0.3;
+}
+
+.header-toggle:hover,
+.header-btn:not(:disabled):hover {
+    opacity: 1;
 }
 
 #no-selection {
