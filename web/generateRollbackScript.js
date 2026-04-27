@@ -1,3 +1,5 @@
+const generateRollbackScript = (() => {
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -15,8 +17,6 @@ function generateRollbackScript(sql) {
 
   return rollbackBlocks.join('\n\n');
 }
-
-module.exports = { generateRollbackScript };
 
 // ---------------------------------------------------------------------------
 // Parsing
@@ -174,3 +174,7 @@ function extractTableName(raw) {
   const parts = raw.split('.');
   return stripBrackets(parts[parts.length - 1]);
 }
+
+return generateRollbackScript;
+
+})();

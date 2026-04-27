@@ -7,6 +7,22 @@
 
 		var vscode = acquireVsCodeApi();
 
+		const showWarningMessage = (message, btnText) => {
+			return new Promise(resolve => {
+				const uid = crypto.randomUUID();
+				const listener = (event) => {
+					const msg = event.data;
+					debugger;
+					if (msg.type !== 'showWarningMessageResponse' || msg.uid !== uid) return;
+					window.removeEventListener('message', listener);
+					resolve(msg.response);
+				}
+				window.addEventListener('message', listener);
+				
+				vscode.postMessage({ type: 'showWarningMessage', message, btnText, uid });
+			});
+		}
+
 		// ── Global display state ───────────────────────────────────────────────
 		var rollbackVisible = true; // seeded from globalState via first 'init'
 
@@ -143,9 +159,18 @@
 		}
 
 		// ── Button: Generate Rollback ───────────────────────────────────────────
-		btnGenerateRollback.addEventListener('click', function () {
-			var proc   = procedures[currentIdx];
-			vscode.postMessage({ type: 'generateRollbackScript', name: proc.name });
+		btnGenerateRollback.addEventListener('click', async function () {
+			const proc = procedures[currentIdx];
+			if (proc.original?.trim() !== '') {
+				if (!(await showWarningMessage(
+					`Generate rollback for "${proc.name}"\n\n`
+					+ `This will overwrite your current rollback for this procedure. `
+					+ `We recommend copying it elsewhere before continuing. `,
+					'Generate & Overwrite'
+				))) return;
+			}
+			proc.original = generateRollbackScript(proc.edited);
+			originalModel.setValue(proc.original)
 		});
 
 		// ── Toggle: Show Diff ───────────────────────────────────────────────────
@@ -187,13 +212,11 @@
 			procedures[currentIdx].edited = modifiedModel.getValue();
 			refreshDots();
 			clearTimeout(editTimer);
-			editTimer = setTimeout(function () {
-				vscode.postMessage({
-					type: 'edit',
-					name: procedures[currentIdx].name,
-					body: modifiedModel.getValue(),
-				});
-			}, 300);
+			vscode.postMessage({
+				type: 'edit',
+				name: procedures[currentIdx].name,
+				body: modifiedModel.getValue(),
+			});
 		});
 
 		// ── Sync original (rollback) model ──────────────────────────────────────
@@ -204,13 +227,11 @@
 			if (proc.editable !== true) return;
 			proc.original = originalModel.getValue();
 			clearTimeout(originalEditTimer);
-			originalEditTimer = setTimeout(function () {
-				vscode.postMessage({
-					type: 'editOriginal',
-					name: proc.name,
-					body: originalModel.getValue(),
-				});
-			}, 300);
+			vscode.postMessage({
+				type: 'editOriginal',
+				name: proc.name,
+				body: originalModel.getValue(),
+			});
 		});
 
 		// ── Switch to a change ──────────────────────────────────────────────────
@@ -549,6 +570,10 @@
 		window.addEventListener('message', function (event) {
 			var data = event.data;
 			switch (data.type) {
+
+				case 'showWarningMessageResponse': {
+					break;
+				}
 
 				case 'init': {
 					if (typeof data.rollbackVisible === 'boolean') {

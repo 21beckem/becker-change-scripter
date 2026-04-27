@@ -3,7 +3,6 @@
 const vscode = require('vscode');
 const path = require('path');
 const fs = require('fs');
-const { generateRollbackScript } = require('./generateRollbackScript.js');
 
 // ─── Database Stubs ───────────────────────────────────────────────────────────
 // TODO: Replace both functions with actual calls to modules/Database.js
@@ -490,7 +489,7 @@ class SqlChangeScriptEditorProvider {
 		// ── Full custom editor ────────────────────────────────────────────────────
 		const context = this._context;   // captured for use in async callbacks
 
-		panel.webview.options = { enableScripts: true };
+		panel.webview.options = { enableScripts: true, allowModels: true };
 		panel.webview.html = getWebviewHtml(context, panel, document);
 
 		let procedures = parsed.toProcedureRecords();
@@ -796,23 +795,18 @@ class SqlChangeScriptEditorProvider {
 					break;
 				}
 
-				case 'generateRollbackScript': {
-					const p = procedures.find(x => x.name === msg.name);
-					if (!p) break;
-					if (p.original?.trim() !== '') {
-						const btnText = 'Generate & Overwrite';
-						const choice = await vscode.window.showWarningMessage(
-							`Generate rollback for "${msg.name}"\n\n`
-							+ `This will overwrite your current rollback for this procedure. `
-							+ `We recommend copying it elsewhere before continuing. `,
-							{ modal: true },
-							btnText
-						);
-						if (choice !== btnText) break;
-					}
-					p.original = generateRollbackScript(p.edited);
-					await applyEdit(procedures);
-					postInit();
+				case 'showWarningMessage': {
+					const { message, btnText, uid } = msg;
+					const choice = await vscode.window.showWarningMessage(
+						message,
+						{ modal: true },
+						btnText
+					);
+					panel.webview.postMessage({
+						type: 'showWarningMessageResponse',
+						uid,
+						response: (choice === btnText)
+					});
 				}
 			}
 		});
