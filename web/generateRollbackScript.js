@@ -28,11 +28,40 @@ function generateRollbackScript(sql) {
  * @returns {ParsedStatement[]}
  */
 function parseStatements(sql) {
-  return sql
-    .split(/^GO[ \t]*$/im)
-    .map(chunk => chunk.trim())
-    .filter(Boolean)
-    .map(classifyStatement);
+  const lines = sql.split('\n');
+
+  // Matches a SQL statement opener only when it sits at column 0.
+  const statementStartRe = /^(CREATE|ALTER|DROP|INSERT|UPDATE|DELETE|SELECT|EXEC|EXECUTE|TRUNCATE|WITH)\b/i;
+  const goLineRe = /^GO[ \t]*$/i;
+
+  const chunks = [];
+  let current = [];
+
+  const flush = () => {
+    const text = current.join('\n').trim();
+    if (text) chunks.push(text);
+    current = [];
+  };
+
+  for (const line of lines) {
+    if (goLineRe.test(line.trim())) {
+      // Explicit GO terminator — flush whatever we have accumulated.
+      flush();
+      continue;
+    }
+
+    if (statementStartRe.test(line) && current.length > 0) {
+      // A new top-level keyword at column 0 implicitly ends the previous statement.
+      flush();
+    }
+
+    current.push(line);
+  }
+
+  // Flush any trailing statement that had no GO at the end.
+  flush();
+
+  return chunks.filter(Boolean).map(classifyStatement);
 }
 
 /**
