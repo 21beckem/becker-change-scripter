@@ -36,7 +36,14 @@
 		function $(id) { return document.getElementById(id); }
 
 		var miniMap              = $('mini-map'),
+			editorPanels         = $('editor-panels'),
 			noSel                = $('no-selection'),
+			generativePanel      = $('generative-panel'),
+			generativeResizer    = $('generative-resizer'),
+			generativeEditorEl   = $('generative-editor'),
+			generativeError      = $('generative-error-overlay'),
+			generativeErrorMsg   = $('generative-error-message'),
+			editorHeader         = $('editor-header'),
 			monacoWrapper        = $('monaco-wrapper'),
 			diffContainer        = $('diff-container'),
 			plainContainer       = $('plain-container'),
@@ -75,6 +82,7 @@
 		// ── Shared text models ──────────────────────────────────────────────────
 		var originalModel = monaco.editor.createModel('', 'sql');
 		var modifiedModel = monaco.editor.createModel('', 'sql');
+		var generativeJsModel = monaco.editor.createModel('', 'javascript');
 
 		// ── Common editor option defaults ───────────────────────────────────────
 		var commonOpts = {
@@ -114,10 +122,40 @@
 			readOnly: true,
 		}));
 
+		// ── Generative JavaScript editor ────────────────────────────────────────
+		var generativeEditor = monaco.editor.create(generativeEditorEl, Object.assign({}, commonOpts, {
+			model: generativeJsModel,
+			language: 'javascript',
+			wordWrap: 'on',
+		}));
+
 		// ── Display mode ────────────────────────────────────────────────────────
 		function getCurrentMode() {
 			if (!rollbackVisible || currentIdx < 0) return 'plain';
 			return procedures[currentIdx].showDiff !== false ? 'diff' : 'split';
+		}
+
+		function normalizeEditorState(editor, model) {
+			var pos = editor.getPosition();
+			var safePos = model.validatePosition(pos || { lineNumber: 1, column: 1 });
+			if (!pos || pos.lineNumber !== safePos.lineNumber || pos.column !== safePos.column) {
+				editor.setPosition(safePos);
+			}
+
+			var sel = editor.getSelection();
+			if (!sel) return;
+			var safeSel = model.validateRange(sel);
+			if (!sel.equalsRange(safeSel)) {
+				editor.setSelection(safeSel);
+			}
+		}
+
+		function normalizeAllEditorStates() {
+			normalizeEditorState(diffEditor.getOriginalEditor(), originalModel);
+			normalizeEditorState(diffEditor.getModifiedEditor(), modifiedModel);
+			normalizeEditorState(plainEditor, modifiedModel);
+			normalizeEditorState(splitLeftEditor, modifiedModel);
+			normalizeEditorState(splitRightEditor, originalModel);
 		}
 
 		function applyMode(triggerLayout) {
@@ -126,6 +164,11 @@
 			plainContainer.style.display = mode === 'plain' ? 'block' : 'none';
 			splitContainer.style.display = mode === 'split' ? 'flex'  : 'none';
 			toggleBtn.innerHTML = rollbackVisible ? '&#x25C0; Hide Rollback' : '&#x25B6; Show Rollback';
+			if (mode === 'diff') {
+				// Rebind on every diff-show transition to avoid stale Monaco state.
+				diffEditor.setModel({ original: originalModel, modified: modifiedModel });
+			}
+			normalizeAllEditorStates();
 			if (triggerLayout) {
 				setTimeout(function () {
 					if (mode === 'diff')  { diffEditor.layout(); }
@@ -137,22 +180,92 @@
 
 		// ── Per-proc option helpers ─────────────────────────────────────────────
 
+		function isGenerativeProc(proc) {
+			return !!proc && proc.changeType === 'generative';
+		}
+
+		function setGeneratedSqlReadOnly(proc) {
+			var readOnly = isGenerativeProc(proc);
+			diffEditor.getModifiedEditor().updateOptions({ readOnly: readOnly });
+			plainEditor.updateOptions({ readOnly: readOnly });
+			splitLeftEditor.updateOptions({ readOnly: readOnly });
+		}
+
 		function applyEditableState(proc) {
+			if (isGenerativeProc(proc)) {
+				diffEditor.getOriginalEditor().updateOptions({ readOnly: true });
+				splitRightEditor.updateOptions({ readOnly: true });
+				return;
+			}
 			var editable = proc.editable === true;
 			diffEditor.getOriginalEditor().updateOptions({ readOnly: !editable });
 			splitRightEditor.updateOptions({ readOnly: !editable });
 		}
 
+		function setGenerativeErrorOverlay(proc) {
+			var show = isGenerativeProc(proc) && proc.generativeSuccess === false;
+			generativeError.style.display = show ? 'flex' : 'none';
+			if (!show) return;
+			generativeErrorMsg.textContent = proc.generativeMessage
+				? 'JavaScript generation failed: ' + proc.generativeMessage
+				: 'JavaScript generation failed. Save again after fixing the script.';
+		}
+
+		var dragState = null;
+		function getGenerativeSplitSpace() {
+			return editorPanels.clientHeight
+				- generativeResizer.offsetHeight
+				- editorHeader.offsetHeight;
+		}
+
+		function setGenerativeSplitByRatio(ratio) {
+			var fullHeight = getGenerativeSplitSpace();
+			if (fullHeight <= 0) return;
+			var minH = 140;
+			var next = Math.floor(fullHeight * ratio);
+			next = Math.max(minH, Math.min(fullHeight - minH, next));
+			generativePanel.style.height = next + 'px';
+			monacoWrapper.style.flex = '0 0 auto';
+			monacoWrapper.style.height = (fullHeight - next) + 'px';
+		}
+
+		function updateGenerativePanel(proc, triggerLayout) {
+			var show = isGenerativeProc(proc);
+			generativePanel.style.display = show ? 'flex' : 'none';
+			generativeResizer.style.display = show ? 'block' : 'none';
+			if (show) {
+				var targetJs = proc.generativeJs || '';
+				if (generativeJsModel.getValue() !== targetJs) {
+					suppressModelChg = true;
+					generativeJsModel.setValue(targetJs);
+					suppressModelChg = false;
+				}
+				if (!monacoWrapper.style.height) setGenerativeSplitByRatio(0.5);
+			} else {
+				monacoWrapper.style.flex = '1';
+				monacoWrapper.style.height = '';
+				generativePanel.style.height = '';
+			}
+			setGenerativeErrorOverlay(proc);
+			if (triggerLayout) {
+				setTimeout(function () {
+					generativeEditor.layout();
+				}, 0);
+			}
+		}
+
 		function updateHeaderToggles(proc) {
 			var show = rollbackVisible && currentIdx >= 0 && proc;
+			var isGenerative = isGenerativeProc(proc);
 			btnShowDiff.style.display = show ? '' : 'none';
-			btnEditable.style.display = show ? '' : 'none';
-			btnGenerateRollback.style.display = show ? '' : 'none';
+			btnEditable.style.display = show && !isGenerative ? '' : 'none';
+			btnGenerateRollback.style.display = show && !isGenerative ? '' : 'none';
 			if (!show) return;
 			var showDiff = proc.showDiff !== false;
 			var editable = proc.editable === true;
 			btnShowDiff.querySelector('span').textContent = 'Diff: ' + (showDiff ? 'On' : 'Off');
 			btnShowDiff.classList.toggle('active', showDiff);
+			if (isGenerative) return;
 			btnEditable.querySelector('span').textContent = 'Rollback: ' + (editable ? 'Editable' : 'Read-only');
 			btnEditable.classList.toggle('active', editable);
 			btnGenerateRollback.disabled = !editable;
@@ -161,6 +274,7 @@
 		// ── Button: Generate Rollback ───────────────────────────────────────────
 		btnGenerateRollback.addEventListener('click', async function () {
 			const proc = procedures[currentIdx];
+			if (isGenerativeProc(proc)) return;
 			if (proc.original?.trim() !== '') {
 				if (!(await showWarningMessage(
 					`Generate rollback for "${proc.name}"\n\n`
@@ -189,6 +303,7 @@
 		btnEditable.addEventListener('click', function () {
 			if (currentIdx < 0) return;
 			var proc   = procedures[currentIdx];
+			if (isGenerativeProc(proc)) return;
 			var newVal = proc.editable !== true;
 			proc.editable = newVal;
 			proc.rollbackOptions = Object.assign({}, proc.rollbackOptions, { editable: newVal });
@@ -203,6 +318,42 @@
 			vscode.postMessage({ type: 'saveDiffState', rollbackVisible: rollbackVisible });
 			applyMode(true);
 			updateHeaderToggles(currentIdx >= 0 ? procedures[currentIdx] : null);
+		});
+
+		generativeResizer.addEventListener('mousedown', function (e) {
+			if (currentIdx < 0 || !isGenerativeProc(procedures[currentIdx])) return;
+			e.preventDefault();
+			var total = getGenerativeSplitSpace();
+			dragState = {
+				startY: e.clientY,
+				startTop: generativePanel.offsetHeight,
+				total: total
+			};
+		});
+
+		window.addEventListener('mousemove', function (e) {
+			if (!dragState) return;
+			var minH = 140;
+			var next = dragState.startTop + (e.clientY - dragState.startY);
+			next = Math.max(minH, Math.min(dragState.total - minH, next));
+			generativePanel.style.height = next + 'px';
+			monacoWrapper.style.flex = '0 0 auto';
+			monacoWrapper.style.height = (dragState.total - next) + 'px';
+			generativeEditor.layout();
+			var mode = getCurrentMode();
+			if (mode === 'diff') diffEditor.layout();
+			if (mode === 'plain') plainEditor.layout();
+			if (mode === 'split') { splitLeftEditor.layout(); splitRightEditor.layout(); }
+		});
+
+		window.addEventListener('mouseup', function () {
+			dragState = null;
+		});
+
+		window.addEventListener('resize', function () {
+			if (currentIdx < 0 || !isGenerativeProc(procedures[currentIdx])) return;
+			setGenerativeSplitByRatio(0.5);
+			generativeEditor.layout();
 		});
 
 		// ── Sync modified (edited) model ────────────────────────────────────────
@@ -234,6 +385,18 @@
 			});
 		});
 
+		generativeJsModel.onDidChangeContent(function () {
+			if (suppressModelChg || currentIdx < 0) return;
+			var proc = procedures[currentIdx];
+			if (!isGenerativeProc(proc)) return;
+			proc.generativeJs = generativeJsModel.getValue();
+			vscode.postMessage({
+				type: 'editGenerativeJs',
+				name: proc.name,
+				body: proc.generativeJs,
+			});
+		});
+
 		// ── Switch to a change ──────────────────────────────────────────────────
 		function switchProc(i) {
 			var isNewProc = (i !== currentIdx);
@@ -261,7 +424,9 @@
 				}
 			}
 
+			setGeneratedSqlReadOnly(proc);
 			applyEditableState(proc);
+			updateGenerativePanel(proc, isNewProc);
 			applyMode(isNewProc);
 			updateHeaderToggles(proc);
 			renderMiniMap();
@@ -474,6 +639,12 @@
 			vscode.postMessage({ type: 'searchProcedures', query: '' });
 		});
 
+		// Option 4: Generative Change
+		$('opt-generative').addEventListener('click', function () {
+			closeAddDropdown();
+			vscode.postMessage({ type: 'createGenerativeChange' });
+		});
+
 		// ── Column + History Table modal ─────────────────────────────────────────
 
 		function openColumnModal() {
@@ -595,6 +766,7 @@
 						currentIdx = -1;
 						noSel.style.display         = 'flex';
 						monacoWrapper.style.display = 'none';
+						updateGenerativePanel(null, false);
 						procTitle.textContent       = 'No change selected';
 						applyMode(false);
 						updateHeaderToggles(null);
@@ -641,6 +813,9 @@
 		// ── Toolbar ──────────────────────────────────────────────────────────────
 		$('btn-view').addEventListener('click', function () {
 			vscode.postMessage({ type: 'viewChangeScript' });
+		});
+		$('btn-copy-clean-sql').addEventListener('click', function () {
+			vscode.postMessage({ type: 'copyCleanSql' });
 		});
 
 		// ── Search dialog ─────────────────────────────────────────────────────────

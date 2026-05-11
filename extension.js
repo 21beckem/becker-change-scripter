@@ -3,6 +3,15 @@
 const vscode = require('vscode');
 const path = require('path');
 const fs = require('fs');
+const vm = require('vm');
+
+Date.prototype.toSQLDateString = function() {
+	const yyyy = this.getFullYear();
+	let mm = String(this.getMonth() + 1).padStart(2, '0'); // January is 0!
+	let dd = String(this.getDate()).padStart(2, '0');
+
+	return mm + '/' + dd + '/' + yyyy;
+}
 
 // ─── Database Stubs ───────────────────────────────────────────────────────────
 // TODO: Replace both functions with actual calls to modules/Database.js
@@ -43,22 +52,35 @@ async function fetchProcedure(name) {
 
 function makeNewProcedure(name) {
 	// Rollback side: IF EXISTS / DROP stub.
-	const rollbackBlock = [
-		`IF EXISTS(SELECT * FROM INFORMATION_SCHEMA.ROUTINES WHERE ROUTINE_NAME = '${name}') BEGIN`,
-		`\tDROP PROCEDURE [dbo].[${name}]`,
-		`END`,
-		`GO`,
-	].join('\n');
+	const rollbackBlock = `
+IF EXISTS(SELECT * FROM INFORMATION_SCHEMA.ROUTINES WHERE ROUTINE_NAME = '${name}') BEGIN
+	DROP PROCEDURE [dbo].[${name}]
+END
+GO
+	`.trim();
 
 	// Update side: CREATE PROCEDURE template.
-	const createBlock = [
-		`CREATE PROCEDURE [dbo].[${name}]`,
-		`AS`,
-		`BEGIN`,
-		`    SET NOCOUNT ON;`,
-		`    -- TODO: Implement procedure`,
-		`END`,
-	].join('\n');
+	const createBlock = `
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+-- =============================================
+-- Author:		
+-- Create date: ${new Date().toSQLDateString()}
+-- Description:	
+-- =============================================
+ALTER PROCEDURE [dbo].[${name}]
+	@MySpecialVariable BIT
+	,@Status INT = NULL OUTPUT
+	,@Message VARCHAR(255) = NULL OUTPUT
+AS
+BEGIN
+    -- do stuff here!
+END
+GO
+	`.trim();
 
 	return {
 		rollbackBlock,
@@ -88,12 +110,156 @@ async function searchTables(query) {
 const DELIM_CHANGE_HEADER = '----  #Chiasm Change# ----';
 const DELIM_CHANGE_START = '----  #Change Start#  ----';
 const DELIM_CHANGE_END = '----  #Change End#    ----';
+const DELIM_GENERATIVE_HEADER = '--------  #Generative Change# --------';
+const DELIM_GENERATIVE_JS_START = '--------  #JS Start#      --------';
+const DELIM_GENERATIVE_JS_END = '--------  #JS End#        --------';
+const DELIM_GENERATIVE_OUTPUT_START = '--------  #Output Start#  --------';
+const DELIM_GENERATIVE_OUTPUT_END = '--------  #Output End#    --------';
+const DELIM_CHIASM_CONSTRUCTION = '--------------------------------\n----  Chiasm Construction   ----\n--------------------------------';
 const CHIASM_CONSTRUCTION_RE = /^-{3,}[^\n]*\n[^\n]*\bConstruction\b[^\n]*\n-{3,}[^\n]*/m;
 const PROC_NAME_RE = /^(?:CREATE|ALTER|DROP)\s+PROCEDURE\s+(?:\[?dbo\]?\.)?\[?(\w+)\]?/im;
 const IF_EXISTS_RE = /ROUTINE_NAME\s*=\s*'(\w+)'/i;
 
 /** Resolved defaults for all known options. */
 const DEFAULT_OPTIONS = Object.freeze({ showDiff: true, editable: false });
+
+function sanitizeOneLineMessage(message) {
+	return String(message ?? '')
+		.replace(/\r?\n/g, ' ')
+		.replace(/\s+/g, ' ')
+		.trim();
+}
+
+function uncommentSqlJs(jsBlock) {
+	return String(jsBlock || '')
+		.split('\n')
+		.map(line => line.replace(/^\s*-- ?/, ''))
+		.join('\n');
+}
+
+function commentJsForSql(js) {
+	return String(js || '')
+		.split('\n')
+		.map(line => `-- ${line}`)
+		.join('\n');
+}
+
+function parseGenerativeSection(rawText) {
+	const source = String(rawText || '');
+	const hIdx = source.indexOf(DELIM_GENERATIVE_HEADER);
+	if (hIdx < 0) return null;
+
+	const jsStartIdx = source.indexOf(DELIM_GENERATIVE_JS_START, hIdx);
+	const jsEndIdx = source.indexOf(DELIM_GENERATIVE_JS_END, jsStartIdx);
+	const outStartIdx = source.indexOf(DELIM_GENERATIVE_OUTPUT_START, jsEndIdx);
+	const outEndIdx = source.indexOf(DELIM_GENERATIVE_OUTPUT_END, outStartIdx);
+	if (jsStartIdx < 0 || jsEndIdx < 0 || outStartIdx < 0 || outEndIdx < 0) return null;
+
+	const meta = source.slice(hIdx + DELIM_GENERATIVE_HEADER.length, jsStartIdx);
+	let success = true;
+	let message = '';
+	for (const line of meta.split('\n')) {
+		const successMatch = line.match(/^-{4,}\s+success:\s*(true|false)\s*$/i);
+		if (successMatch) {
+			success = successMatch[1].toLowerCase() === 'true';
+			continue;
+		}
+		const msgMatch = line.match(/^-{4,}\s+message:\s*(.*?)\s*$/i);
+		if (msgMatch) message = sanitizeOneLineMessage(msgMatch[1]);
+	}
+
+	const jsBlockStart = jsStartIdx + DELIM_GENERATIVE_JS_START.length;
+	const outputStart = outStartIdx + DELIM_GENERATIVE_OUTPUT_START.length;
+
+	const commentedJs = source.slice(jsBlockStart, jsEndIdx).trim();
+	const output = source.slice(outputStart, outEndIdx).trim();
+
+	return {
+		js: uncommentSqlJs(commentedJs),
+		output,
+		success,
+		message,
+	};
+}
+
+function buildGenerativeSection({ js, output, success, message }) {
+	const safeMessage = sanitizeOneLineMessage(message);
+	const lines = [
+		DELIM_GENERATIVE_HEADER,
+		`--------  success: ${success ? 'true' : 'false'}`,
+	];
+	if (safeMessage) lines.push(`--------  message: ${safeMessage}`);
+	lines.push(
+		DELIM_GENERATIVE_JS_START,
+		commentJsForSql(js),
+		DELIM_GENERATIVE_JS_END,
+		DELIM_GENERATIVE_OUTPUT_START,
+		String(output || '').trim(),
+		DELIM_GENERATIVE_OUTPUT_END
+	);
+	return lines.join('\n');
+}
+
+let cachedRollbackGenerator = null;
+function getRollbackGenerator() {
+	if (cachedRollbackGenerator) return cachedRollbackGenerator;
+	const scriptPath = path.join(__dirname, 'web', 'generateRollbackScript.js');
+	const source = fs.readFileSync(scriptPath, 'utf8');
+	const sandbox = { module: { exports: null }, exports: {}, console };
+	vm.runInNewContext(`${source}\nmodule.exports = generateRollbackScript;`, sandbox, {
+		filename: 'generateRollbackScript.js',
+	});
+	if (typeof sandbox.module.exports !== 'function')
+		throw new Error('Failed to initialize generateRollbackScript.');
+	cachedRollbackGenerator = sandbox.module.exports;
+	return cachedRollbackGenerator;
+}
+
+function runGenerativeScript(js) {
+	const wrapped = `"use strict";\n(() => {\n${String(js || '')}\n})()`;
+	const script = new vm.Script(wrapped);
+	const sandbox = Object.create(null);
+	sandbox.generateRollbackScript = getRollbackGenerator();
+	const result = script.runInNewContext(sandbox, { timeout: 1000 });
+
+	if (!result || typeof result !== 'object' || Array.isArray(result))
+		throw new Error('Generative script must return an object: { change: string, rollback: string }.');
+	if (!Object.prototype.hasOwnProperty.call(result, 'change')
+		|| !Object.prototype.hasOwnProperty.call(result, 'rollback'))
+		throw new Error('Generative script must return both "change" and "rollback" properties.');
+	if (typeof result.change !== 'string' || typeof result.rollback !== 'string')
+		throw new Error('Generative script properties "change" and "rollback" must both be strings.');
+
+	return { change: result.change, rollback: result.rollback };
+}
+
+function regenerateGenerativeProcedures(procedures) {
+	return procedures.map(p => {
+		if (p.changeType !== 'generative') return p;
+		const previousOutput = String(p.generativeOutput ?? p.edited ?? '');
+		const previousRollback = String(p.rollback ?? '');
+		try {
+			const generated = runGenerativeScript(p.generativeJs || '');
+			return {
+				...p,
+				edited: generated.change,
+				rollback: generated.rollback,
+				generativeOutput: generated.change,
+				generativeSuccess: true,
+				generativeMessage: '',
+			};
+		} catch (err) {
+			return {
+				...p,
+				edited: previousOutput,
+				rollback: previousRollback,
+				generativeOutput: previousOutput,
+				generativeSuccess: false,
+				generativeMessage: sanitizeOneLineMessage(err && err.message ? err.message : String(err)),
+			};
+		}
+	});
+}
 
 // ─── ChangeBlock ──────────────────────────────────────────────────────────────
 
@@ -108,7 +274,7 @@ class ChangeBlock {
 
 	/**
 	 * @param {'update'|'rollback'} type
-	 * @param {Record<string,boolean>} options  Only options explicitly set in the delimiter.
+	 * @param {Record<string,boolean|string>} options  Only options explicitly set in the delimiter.
 	 * @param {string} rawText                  SQL text between #Change Start# and #Change End#.
 	 */
 	constructor(type, options, rawText) {
@@ -303,12 +469,22 @@ class ChangeScript {
 	 * Each record may carry updateOptions / rollbackOptions to preserve
 	 * options that were set in the original file.
 	 * @param {{ name: string, original: string, edited: string,
+	 *            changeType?: string, generativeJs?: string, generativeOutput?: string,
+	 *            generativeSuccess?: boolean, generativeMessage?: string,
 	 *            updateOptions?: {}, rollbackOptions?: {} }[]} records
 	 * @returns {ChangeScript}
 	 */
 	static fromRecords(records) {
 		const pairs = records.map(r => {
-			const upBlock = new ChangeBlock('update', r.updateOptions || {}, r.edited);
+			const updateRawText = r.changeType === 'generative'
+				? buildGenerativeSection({
+					js: r.generativeJs || '',
+					output: r.generativeOutput ?? r.edited ?? '',
+					success: r.generativeSuccess !== false,
+					message: r.generativeMessage || '',
+				})
+				: r.edited;
+			const upBlock = new ChangeBlock('update', r.updateOptions || {}, updateRawText);
 			const rbBlock = new ChangeBlock('rollback', r.rollbackOptions || {}, r.original);
 			return new ChangePair(r.name, upBlock, rbBlock);
 		});
@@ -343,12 +519,11 @@ class ChangeScript {
 	 */
 	toString() {
 		if (!this.#pairs.length) return '';
-		const chiasm = '--------------------------------\n----  Chiasm Construction   ----\n--------------------------------';
 		const rollbackStr = [...this.#pairs].reverse()
 			.map(p => p.rollbackBlock.toString()).join('\n\n');
 		const updateStr = this.#pairs
 			.map(p => p.updateBlock.toString()).join('\n\n');
-		return `${rollbackStr}\n\n${chiasm}\n\n${updateStr}\n`;
+		return `${rollbackStr}\n\n${DELIM_CHIASM_CONSTRUCTION}\n\n${updateStr}\n`;
 	}
 
 	/**
@@ -357,22 +532,46 @@ class ChangeScript {
 	 * round-trips through the in-memory procedures array without data loss.
 	 */
 	toProcedureRecords() {
-		return this.#pairs.map(p => ({
-			name: p.name,
-			original: p.getRollbackText(),
-			edited: p.getUpdateText(),
-			isNew: p.isNew,
-			showDiff: p.getOption('showDiff'),
-			editable: p.getOption('editable'),
-			updateOptions: p.updateBlock.options,
-			rollbackOptions: p.rollbackBlock.options,
-		}));
+		return this.#pairs.map(p => {
+			const updateText = p.getUpdateText();
+			const generative = parseGenerativeSection(updateText);
+			return {
+				name: p.name,
+				original: p.getRollbackText(),
+				edited: generative ? generative.output : updateText,
+				isNew: p.isNew,
+				changeType: generative ? 'generative' : 'procedure',
+				generativeJs: generative ? generative.js : '',
+				generativeSuccess: generative ? generative.success : true,
+				generativeMessage: generative ? generative.message : '',
+				generativeOutput: generative ? generative.output : '',
+				showDiff: p.getOption('showDiff'),
+				editable: p.getOption('editable'),
+				updateOptions: p.updateBlock.options,
+				rollbackOptions: p.rollbackBlock.options,
+			};
+		});
 	}
 }
 
 /** Serialise a plain procedures array to the full document string. */
 function serializeDocument(procedures) {
 	return ChangeScript.fromRecords(procedures).toString();
+}
+
+function buildCleanSqlDocument(procedures) {
+	const rollbackSql = [...procedures]
+		.reverse()
+		.map(p => String(p.original || '').trim())
+		.filter(Boolean);
+	const changeSql = procedures
+		.map(p => String(p.edited || '').trim())
+		.filter(Boolean);
+	return [
+		...rollbackSql,
+		DELIM_CHIASM_CONSTRUCTION,
+		...changeSql
+	].join('\n\n');
 }
 
 // ─── Plain-text fallback HTML (used for git:// diff views) ───────────────────
@@ -545,6 +744,7 @@ class SqlChangeScriptEditorProvider {
 		// This is the only path that writes edited procedure content to the file.
 		const saveSub = vscode.workspace.onWillSaveTextDocument(e => {
 			if (e.document.uri.toString() !== document.uri.toString()) return;
+			procedures = regenerateGenerativeProcedures(procedures);
 			const newText = serializeDocument(procedures);
 			if (newText === document.getText()) return;
 			e.waitUntil(Promise.resolve([
@@ -591,6 +791,13 @@ class SqlChangeScriptEditorProvider {
 					break;
 				}
 
+				case 'editGenerativeJs': {
+					const p = procedures.find(x => x.name === msg.name);
+					if (!p || p.changeType !== 'generative') break;
+					p.generativeJs = msg.body;
+					break;
+				}
+
 				// User toggled showDiff or editable for a proc — persist to file.
 				case 'setOption': {
 					const p = procedures.find(x => x.name === msg.name);
@@ -627,6 +834,7 @@ class SqlChangeScriptEditorProvider {
 						original: '',
 						edited:   '',
 						isNew:    true,
+						changeType: 'custom',
 						updateOptions:  { name, showDiff: false, editable: true },
 						rollbackOptions: { name, showDiff: false, editable: true },
 					}]);
@@ -652,6 +860,7 @@ class SqlChangeScriptEditorProvider {
 						original: rollbackSql,
 						edited:   updateSql,
 						isNew:    true,
+						changeType: 'column',
 						updateOptions:  { name, showDiff: false, editable: false },
 						rollbackOptions: { name, showDiff: false, editable: false },
 					}]);
@@ -665,6 +874,7 @@ class SqlChangeScriptEditorProvider {
 					const rawBody = await fetchProcedure(msg.name);
 					await applyEdit([...procedures, {
 						name: msg.name, original: rawBody, edited: rawBody, isNew: false,
+						changeType: 'procedure',
 						updateOptions: {}, rollbackOptions: {},
 					}]);
 					switchToLastIndex = true;
@@ -681,6 +891,7 @@ class SqlChangeScriptEditorProvider {
 
 					await applyEdit([...procedures, {
 						name, original: rollbackBlock, edited: createBlock, isNew: true,
+						changeType: 'procedure',
 						// New procs have no meaningful diff — store showDiff:false on the update block.
 						updateOptions: {}, rollbackOptions: { showDiff: false },
 					}]);
@@ -703,11 +914,43 @@ class SqlChangeScriptEditorProvider {
 						p.name === msg.name
 							? {
 								name: msg.name, original: rawBody, edited: p.edited, isNew: false,
+								changeType: p.changeType || 'procedure',
 								updateOptions: {}, rollbackOptions: {}
 							}
 							: p
 					));
 					postInit();
+					break;
+				}
+
+				case 'createGenerativeChange': {
+					const names = procedures
+						.map(p => p.name.match(/^Generative Change (\d+)$/))
+						.filter(Boolean)
+						.map(m => parseInt(m[1], 10));
+					const nextN = names.length ? Math.max(...names) + 1 : 1;
+					const name = `Generative Change ${nextN}`;
+					await applyEdit([...procedures, {
+						name,
+						original: '',
+						edited: '',
+						isNew: true,
+						changeType: 'generative',
+						generativeJs: [
+							"const change = 'CREATE TABLE MyTable (MyBitColumn BIT);",
+							'return {',
+							' 	change,',
+							'	rollback: generateRollbackScript(change),',
+							'};',
+						].join('\n'),
+						generativeOutput: '',
+						generativeSuccess: true,
+						generativeMessage: '',
+						updateOptions: { name, showDiff: false, editable: true },
+						rollbackOptions: { name, showDiff: false, editable: true },
+					}]);
+					switchToLastIndex = true;
+					refreshFromDocument();
 					break;
 				}
 
@@ -792,6 +1035,13 @@ class SqlChangeScriptEditorProvider {
 					// Re-open the same file with VS Code's built-in text editor so the
 					// user sees the raw, fully editable SQL without the custom editor.
 					await vscode.commands.executeCommand('vscode.openWith', document.uri, 'default');
+					break;
+				}
+
+				case 'copyCleanSql': {
+					const cleanSql = buildCleanSqlDocument(procedures);
+					await vscode.env.clipboard.writeText(cleanSql);
+					vscode.window.showInformationMessage('Copied clean SQL to clipboard.');
 					break;
 				}
 
