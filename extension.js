@@ -693,16 +693,16 @@ class SqlChangeScriptEditorProvider {
 
 		let procedures = parsed.toProcedureRecords();
 		let suppressCnt = 0;
-		let switchToLastIndex = false;
+		let switchToIndex = null;
 
 		const postInit = () => {
 			panel.webview.postMessage({
 				type: 'init',
 				procedures,
-				switchToIdx: (switchToLastIndex) ? procedures.length - 1 : undefined,
+				switchToIdx: (switchToIndex) ? switchToIndex : undefined,
 				rollbackVisible: context.globalState.get('rollbackVisible', true),
 			});
-			switchToLastIndex = false;
+			switchToIndex = null;
 		}
 
 		/**
@@ -838,7 +838,7 @@ class SqlChangeScriptEditorProvider {
 						updateOptions:  { name, showDiff: false, editable: true },
 						rollbackOptions: { name, showDiff: false, editable: true },
 					}]);
-					switchToLastIndex = true;
+					switchToIndex = procedures.length - 1;
 					refreshFromDocument();
 					break;
 				}
@@ -864,7 +864,7 @@ class SqlChangeScriptEditorProvider {
 						updateOptions:  { name, showDiff: false, editable: false },
 						rollbackOptions: { name, showDiff: false, editable: false },
 					}]);
-					switchToLastIndex = true;
+					switchToIndex = procedures.length - 1;
 					refreshFromDocument();
 					break;
 				}
@@ -877,7 +877,7 @@ class SqlChangeScriptEditorProvider {
 						changeType: 'procedure',
 						updateOptions: {}, rollbackOptions: {},
 					}]);
-					switchToLastIndex = true;
+					switchToIndex = procedures.length - 1;
 					refreshFromDocument();
 					break;
 				}
@@ -895,7 +895,7 @@ class SqlChangeScriptEditorProvider {
 						// New procs have no meaningful diff — store showDiff:false on the update block.
 						updateOptions: {}, rollbackOptions: { showDiff: false },
 					}]);
-					switchToLastIndex = true;
+					switchToIndex = procedures.length - 1;
 					refreshFromDocument();
 					break;
 				}
@@ -937,7 +937,14 @@ class SqlChangeScriptEditorProvider {
 						isNew: true,
 						changeType: 'generative',
 						generativeJs: [
-							"const change = 'CREATE TABLE MyTable (MyBitColumn BIT);';",
+							"const change = `",
+							"CREATE TABLE MyTable (MyBitColumn BIT);",
+							"GO",
+							"",
+							"CREATE TABLE MySecondTable (MyIntColumn INT);",
+							"GO",
+							"`;",
+							"",
 							'return {',
 							' 	change,',
 							'	rollback: generateRollbackScript(change),',
@@ -949,7 +956,7 @@ class SqlChangeScriptEditorProvider {
 						updateOptions: { name, showDiff: false, editable: true },
 						rollbackOptions: { name, showDiff: false, editable: true },
 					}]);
-					switchToLastIndex = true;
+					switchToIndex = procedures.length - 1;
 					refreshFromDocument();
 					break;
 				}
@@ -1009,24 +1016,26 @@ class SqlChangeScriptEditorProvider {
 					// Update the CREATE PROCEDURE body.
 					const newEdited = p.edited
 						.replace(new RegExp(`\\[${esc(oldName)}\\]`, 'g'), `[${n}]`);
-					await applyEdit(procedures.map(x =>
-						x.name === oldName
-							? {
-								name: n,
-								original: newOriginal,
-								edited: newEdited,
-								isNew: x.isNew,
-								updateOptions: {
-									...(x.updateOptions || {}),
-									name: n
-								},
-								rollbackOptions: {
-									...(x.rollbackOptions || {}),
-									name: n
-								}
+					let thisIdx = procedures.length - 1; // default to last procedure
+					await applyEdit(procedures.map((x, i) => {
+						if (x.name !== oldName) return x;
+						thisIdx = i;
+						return {
+							...x,
+							name: n,
+							original: newOriginal,
+							edited: newEdited,
+							updateOptions: {
+								...(x.updateOptions || {}),
+								name: n
+							},
+							rollbackOptions: {
+								...(x.rollbackOptions || {}),
+								name: n
 							}
-							: x
-					));
+						}
+					}));
+					switchToIndex = thisIdx;
 					postInit();
 					break;
 				}
