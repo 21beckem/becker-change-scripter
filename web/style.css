@@ -117,7 +117,16 @@ body {
 .proc-item.modified .dot {
 	background: #e5c07b;
 }
-
+.proc-item.generative .dot {
+	background: transparent;
+}
+.proc-item .dot svg {
+	fill: transparent;
+}
+.proc-item.generative .dot svg {
+	fill: #cc7be5;
+	transform: translateY(-6px) scale(2);
+}
 .proc-item:not(.modified) .dot {
 	background: transparent;
 }

@@ -1,3 +1,4 @@
+const SPLOTCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 640"><!--!Font Awesome Free v7.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free Copyright 2026 Fonticons, Inc.--><path d="M272.5 126.3L300.6 89.4C312.8 73.4 331.8 64 352 64C380.5 64 405.6 82.7 413.8 110L431.6 169.4C441.9 203.8 467.7 231.4 501.4 244L541.2 258.9C562.1 266.8 576 286.8 576 309.1C576 326 568.1 341.9 554.5 352L487.2 402.5C462.9 420.7 450 450.4 453.4 480.6L455.9 503.3C460.2 542 429.9 575.9 390.9 575.9C376.1 575.9 361.6 570.8 350 561.6L294.7 517.3C290.2 513.7 285.4 510.6 280.2 508.1C264.4 500.2 246.5 497.7 229.2 500.8L146.4 515.9C111.8 522.2 80 495.6 80 460.5C80 447.3 84.7 434.5 93.1 424.3L104.3 410.9C118.9 393.5 126.9 371.5 126.9 348.8C126.9 330 121.4 311.6 111.1 295.8L72.8 237.5C67.1 228.7 64 218.4 64 207.9C64 174.5 94.1 149.1 127 154.7L178.3 163.4C214.2 169.5 250.5 155.2 272.5 126.3z"/></svg>`;
 (function () {
 	'use strict';
 
@@ -443,9 +444,10 @@
 			procedures.forEach(function (proc, i) {
 				var el = document.createElement('div');
 				el.className = 'proc-item'
-					+ (i === currentIdx              ? ' active'   : '')
-					+ (proc.original !== proc.edited ? ' modified' : '');
-				el.title = proc.name + (proc.isNew ? ' (new)' : '') + '\nRight-click for options';
+					+ (i === currentIdx              ? ' active'     : '')
+					+ (proc.original !== proc.edited ? ' modified'   : '')
+					+ (isGenerativeProc(proc)        ? ' generative' : '');
+				el.title = proc.name + ' (Right-click for options)';
 
 				var handle = document.createElement('span');
 				handle.className   = 'drag-handle';
@@ -458,11 +460,12 @@
 
 				var dot = document.createElement('span');
 				dot.className = 'dot';
+				dot.innerHTML = SPLOTCH_SVG;
 
 				var label = document.createElement('span');
 				label.style.overflow     = 'hidden';
 				label.style.textOverflow = 'ellipsis';
-				label.textContent = proc.name + (proc.isNew ? ' ✦' : '');
+				label.textContent = proc.name;
 
 				el.appendChild(handle);
 				el.appendChild(dot);
@@ -532,6 +535,7 @@
 			miniMap.querySelectorAll('.proc-item').forEach(function (el, i) {
 				if (!procedures[i]) return;
 				el.classList.toggle('modified', procedures[i].original !== procedures[i].edited);
+				el.classList.toggle('generative', isGenerativeProc(procedures[i]));
 			});
 		}
 
