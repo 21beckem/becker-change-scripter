@@ -243,7 +243,7 @@ function regenerateGenerativeProcedures(procedures) {
 			return {
 				...p,
 				edited: generated.change,
-				rollback: generated.rollback,
+				original: generated.rollback,
 				generativeOutput: generated.change,
 				generativeSuccess: true,
 				generativeMessage: '',
@@ -252,7 +252,7 @@ function regenerateGenerativeProcedures(procedures) {
 			return {
 				...p,
 				edited: previousOutput,
-				rollback: previousRollback,
+				original: previousRollback,
 				generativeOutput: previousOutput,
 				generativeSuccess: false,
 				generativeMessage: sanitizeOneLineMessage(err && err.message ? err.message : String(err)),
@@ -937,7 +937,7 @@ class SqlChangeScriptEditorProvider {
 						isNew: true,
 						changeType: 'generative',
 						generativeJs: [
-							"const change = 'CREATE TABLE MyTable (MyBitColumn BIT);",
+							"const change = 'CREATE TABLE MyTable (MyBitColumn BIT);';",
 							'return {',
 							' 	change,',
 							'	rollback: generateRollbackScript(change),',
