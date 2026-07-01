@@ -22,7 +22,23 @@ const SPLOTCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 64
 				
 				vscode.postMessage({ type: 'showWarningMessage', message, btnText, uid });
 			});
-		}
+		};
+
+		const runChangeScript = () => {
+			return new Promise(resolve => {
+				const uid = crypto.randomUUID();
+				const listener = (event) => {
+					const msg = event.data;
+					debugger;
+					if (msg.type !== 'runChangeScriptResponse' || msg.uid !== uid) return;
+					window.removeEventListener('message', listener);
+					resolve(msg.response);
+				}
+				window.addEventListener('message', listener);
+				
+				vscode.postMessage({ type: 'runChangeScript', uid });
+			});
+		};
 
 		// ── Global display state ───────────────────────────────────────────────
 		var rollbackVisible = true; // seeded from globalState via first 'init'
@@ -30,13 +46,19 @@ const SPLOTCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 64
 		// ── Runtime state ──────────────────────────────────────────────────────
 		var procedures       = [];
 		var currentIdx       = -1;
+		var viewingGlobalNamespace = false;
+		var outputExpanded   = false;
 		var suppressModelChg = false;
 		var dragSrcIdx       = -1;
+		var leftResizeState  = null;
 
 		// ── DOM refs ───────────────────────────────────────────────────────────
 		function $(id) { return document.getElementById(id); }
 
 		var miniMap              = $('mini-map'),
+			leftPanel            = $('left-panel'),
+			leftPanelResizer     = $('left-panel-resizer'),
+			globalNamespaceEditorEl = $('global-namespace-editor'),
 			editorPanels         = $('editor-panels'),
 			noSel                = $('no-selection'),
 			generativePanel      = $('generative-panel'),
@@ -49,6 +71,7 @@ const SPLOTCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 64
 			diffContainer        = $('diff-container'),
 			plainContainer       = $('plain-container'),
 			splitContainer       = $('split-container'),
+			globalNamespaceContainer = $('global-namespace-container'),
 			splitLeft            = $('split-left'),
 			splitRight           = $('split-right'),
 			procTitle            = $('proc-title'),
@@ -56,9 +79,16 @@ const SPLOTCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 64
 			btnGenerateRollback  = $('btn-generate-rollback'),
 			btnShowDiff          = $('btn-toggle-show-diff'),
 			btnEditable          = $('btn-toggle-editable'),
+			btnRun               = $('btn-run'),
+			moreDropdown         = $('more-dropdown'),
 			validationBanner     = $('validation-banner'),
 			ctxMenuEl            = $('context-menu'),
 			addDropdown          = $('add-dropdown'),
+			outputPanel          = $('output-panel'),
+			outputHeader         = $('output-header'),
+			outputMessages       = $('output-messages'),
+			outputTabMessages    = $('output-tab-messages'),
+			outputToggleIndicator = $('output-toggle-indicator'),
 			searchOverlay        = $('search-overlay'),
 			searchView           = $('search-view'),
 			createView           = $('create-view'),
@@ -84,6 +114,7 @@ const SPLOTCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 64
 		var originalModel = monaco.editor.createModel('', 'sql');
 		var modifiedModel = monaco.editor.createModel('', 'sql');
 		var generativeJsModel = monaco.editor.createModel('', 'javascript');
+		var globalNamespaceModel = monaco.editor.createModel('', 'javascript');
 
 		// ── Common editor option defaults ───────────────────────────────────────
 		var commonOpts = {
@@ -129,9 +160,71 @@ const SPLOTCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 64
 			language: 'javascript',
 			wordWrap: 'on',
 		}));
+		var globalNamespaceEditor = monaco.editor.create(globalNamespaceEditorEl, Object.assign({}, commonOpts, {
+			model: globalNamespaceModel,
+			language: 'javascript',
+			wordWrap: 'on',
+		}));
+
+		var globalJsExtraLib = null;
+		monaco.languages.typescript.javascriptDefaults.addExtraLib(
+			'declare function generateRollbackScript(sql: string): string;',
+			'file:///becker-builtins.d.ts'
+		);
+
+		function collectGlobalNamespaceSymbols(js) {
+			var source = String(js || '');
+			var symbols = new Set();
+			var add = function (name) {
+				if (!name) return;
+				symbols.add(name);
+			};
+			var m;
+			var fnRe = /\bfunction\s+([A-Za-z_$][\w$]*)\s*\(/g;
+			while ((m = fnRe.exec(source)) !== null) add(m[1]);
+			var varRe = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)/g;
+			while ((m = varRe.exec(source)) !== null) add(m[1]);
+			var classRe = /\bclass\s+([A-Za-z_$][\w$]*)\b/g;
+			while ((m = classRe.exec(source)) !== null) add(m[1]);
+			return symbols;
+		}
+
+		function buildGlobalNamespaceDts(js) {
+			var lines = [];
+			collectGlobalNamespaceSymbols(js).forEach(function (name) {
+				lines.push('declare const ' + name + ': any;');
+			});
+			return lines.join('\n');
+		}
+
+		function updateGlobalNamespaceIntelliSense(js) {
+			if (globalJsExtraLib) globalJsExtraLib.dispose();
+			globalJsExtraLib = monaco.languages.typescript.javascriptDefaults.addExtraLib(
+				buildGlobalNamespaceDts(js),
+				'file:///becker-global-namespace.d.ts'
+			);
+		}
+
+		const OutputPanel = {
+			setExpanded: (expanded) => {
+				outputExpanded = !!expanded;
+				outputPanel.classList.toggle('collapsed', !outputExpanded);
+				outputToggleIndicator.innerHTML = outputExpanded ? '&#x25BC;' : '&#x25B2;';
+			},
+			appendMessage: (message) => {
+				var stamp = new Date().toLocaleTimeString();
+				var line = '[' + stamp + '] ' + message;
+				if (outputMessages.textContent) outputMessages.textContent += '\n';
+				outputMessages.textContent += line;
+			},
+			clearMessages: () => {
+				outputMessages.textContent = '';
+			}
+		};
 
 		// ── Display mode ────────────────────────────────────────────────────────
 		function getCurrentMode() {
+			if (viewingGlobalNamespace) return 'global';
 			if (!rollbackVisible || currentIdx < 0) return 'plain';
 			return procedures[currentIdx].showDiff !== false ? 'diff' : 'split';
 		}
@@ -157,13 +250,16 @@ const SPLOTCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 64
 			normalizeEditorState(plainEditor, modifiedModel);
 			normalizeEditorState(splitLeftEditor, modifiedModel);
 			normalizeEditorState(splitRightEditor, originalModel);
+			normalizeEditorState(globalNamespaceEditor, globalNamespaceModel);
 		}
 
 		function applyMode(triggerLayout) {
 			var mode = getCurrentMode();
+			globalNamespaceContainer.style.display = mode === 'global' ? 'block' : 'none';
 			diffContainer.style.display  = mode === 'diff'  ? 'block' : 'none';
 			plainContainer.style.display = mode === 'plain' ? 'block' : 'none';
 			splitContainer.style.display = mode === 'split' ? 'flex'  : 'none';
+			toggleBtn.style.display = mode === 'global' ? 'none' : '';
 			toggleBtn.innerHTML = rollbackVisible ? '&#x25C0; Hide Rollback' : '&#x25B6; Show Rollback';
 			if (mode === 'diff') {
 				// Rebind on every diff-show transition to avoid stale Monaco state.
@@ -172,6 +268,7 @@ const SPLOTCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 64
 			normalizeAllEditorStates();
 			if (triggerLayout) {
 				setTimeout(function () {
+					if (mode === 'global') { globalNamespaceEditor.layout(); }
 					if (mode === 'diff')  { diffEditor.layout(); }
 					if (mode === 'plain') { plainEditor.layout(); }
 					if (mode === 'split') { splitLeftEditor.layout(); splitRightEditor.layout(); }
@@ -183,6 +280,11 @@ const SPLOTCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 64
 
 		function isGenerativeProc(proc) {
 			return !!proc && proc.changeType === 'generative';
+		}
+
+		function getGenerativeIndicatorClass(proc) {
+			if (!isGenerativeProc(proc)) return '';
+			return proc.generativeSuccess === false ? ' generative-failure' : ' generative-success';
 		}
 
 		function setGeneratedSqlReadOnly(proc) {
@@ -349,12 +451,29 @@ const SPLOTCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 64
 
 		window.addEventListener('mouseup', function () {
 			dragState = null;
+			leftResizeState = null;
 		});
 
 		window.addEventListener('resize', function () {
+			globalNamespaceEditor.layout();
 			if (currentIdx < 0 || !isGenerativeProc(procedures[currentIdx])) return;
 			setGenerativeSplitByRatio(0.5);
 			generativeEditor.layout();
+		});
+
+		leftPanelResizer.addEventListener('mousedown', function (e) {
+			e.preventDefault();
+			leftResizeState = {
+				startX: e.clientX,
+				startWidth: leftPanel.getBoundingClientRect().width
+			};
+		});
+
+		window.addEventListener('mousemove', function (e) {
+			if (!leftResizeState) return;
+			var nextWidth = leftResizeState.startWidth + (e.clientX - leftResizeState.startX);
+			nextWidth = Math.max(180, Math.min(560, nextWidth));
+			leftPanel.style.width = nextWidth + 'px';
 		});
 
 		// ── Sync modified (edited) model ────────────────────────────────────────
@@ -398,8 +517,19 @@ const SPLOTCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 64
 			});
 		});
 
+		globalNamespaceModel.onDidChangeContent(function () {
+			if (suppressModelChg) return;
+			var value = globalNamespaceModel.getValue();
+			updateGlobalNamespaceIntelliSense(value);
+			vscode.postMessage({
+				type: 'editGlobalNamespaceJs',
+				body: value,
+			});
+		});
+
 		// ── Switch to a change ──────────────────────────────────────────────────
 		function switchProc(i) {
+			viewingGlobalNamespace = false;
 			var isNewProc = (i !== currentIdx);
 			currentIdx = i;
 			var proc = procedures[i];
@@ -434,6 +564,19 @@ const SPLOTCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 64
 			if (isNewProc) hideValidationBanner();
 		}
 
+		function switchToGlobalNamespace() {
+			viewingGlobalNamespace = true;
+			currentIdx = -1;
+			procTitle.textContent = 'Global Gernative Namespace';
+			noSel.style.display = 'none';
+			monacoWrapper.style.display = 'block';
+			updateGenerativePanel(null, false);
+			applyMode(true);
+			updateHeaderToggles(null);
+			renderMiniMap();
+			hideValidationBanner();
+		}
+
 		// ── Mini Map ────────────────────────────────────────────────────────────
 		function renderMiniMap() {
 			if (!procedures.length) {
@@ -446,7 +589,7 @@ const SPLOTCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 64
 				el.className = 'proc-item'
 					+ (i === currentIdx              ? ' active'     : '')
 					+ (proc.original !== proc.edited ? ' modified'   : '')
-					+ (isGenerativeProc(proc)        ? ' generative' : '');
+					+ getGenerativeIndicatorClass(proc);
 				el.title = proc.name + ' (Right-click for options)';
 
 				var handle = document.createElement('span');
@@ -535,7 +678,8 @@ const SPLOTCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 64
 			miniMap.querySelectorAll('.proc-item').forEach(function (el, i) {
 				if (!procedures[i]) return;
 				el.classList.toggle('modified', procedures[i].original !== procedures[i].edited);
-				el.classList.toggle('generative', isGenerativeProc(procedures[i]));
+				el.classList.toggle('generative-success', isGenerativeProc(procedures[i]) && procedures[i].generativeSuccess !== false);
+				el.classList.toggle('generative-failure', isGenerativeProc(procedures[i]) && procedures[i].generativeSuccess === false);
 			});
 		}
 
@@ -575,9 +719,11 @@ const SPLOTCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 64
 			if (!ctxMenuEl.contains(e.target)) closeContextMenu();
 			if (!addDropdown.contains(e.target) && !$('btn-add').contains(e.target))
 				closeAddDropdown();
+			if (!moreDropdown.contains(e.target) && !$('btn-more').contains(e.target))
+				closeMoreDropdown();
 		});
 		document.addEventListener('keydown', function (e) {
-			if (e.key === 'Escape') { closeContextMenu(); closeAddDropdown(); }
+			if (e.key === 'Escape') { closeContextMenu(); closeAddDropdown(); closeMoreDropdown(); }
 		});
 
 		$('ctx-refetch').addEventListener('click', function () {
@@ -604,6 +750,7 @@ const SPLOTCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 64
 		// ── Add Change dropdown ──────────────────────────────────────────────────
 		$('btn-add').addEventListener('click', function (e) {
 			e.stopPropagation();
+			closeMoreDropdown();
 			if (addDropdown.style.display === 'block') {
 				closeAddDropdown();
 				return;
@@ -620,6 +767,26 @@ const SPLOTCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 64
 
 		function closeAddDropdown() {
 			addDropdown.style.display = 'none';
+		}
+
+		$('btn-more').addEventListener('click', function (e) {
+			e.stopPropagation();
+			closeAddDropdown();
+			if (moreDropdown.style.display === 'block') {
+				closeMoreDropdown();
+				return;
+			}
+			var rect = $('btn-more').getBoundingClientRect();
+			moreDropdown.style.display = 'block';
+			moreDropdown.style.left = '-9999px';
+			var dw = moreDropdown.offsetWidth || 210;
+			var x  = Math.min(rect.left, window.innerWidth - dw - 6);
+			moreDropdown.style.left = x + 'px';
+			moreDropdown.style.top  = (rect.bottom + 4) + 'px';
+		});
+
+		function closeMoreDropdown() {
+			moreDropdown.style.display = 'none';
 		}
 
 		// Option 1: Custom — blank entry, switch immediately
@@ -754,6 +921,11 @@ const SPLOTCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 64
 					if (typeof data.rollbackVisible === 'boolean') {
 						rollbackVisible = data.rollbackVisible;
 					}
+					suppressModelChg = true;
+					globalNamespaceModel.setValue(data.globalNamespaceJs || '');
+					suppressModelChg = false;
+					updateGlobalNamespaceIntelliSense(globalNamespaceModel.getValue());
+
 					var prevName = (currentIdx >= 0 && procedures[currentIdx])
 						? procedures[currentIdx].name : null;
 					procedures = data.procedures;
@@ -762,7 +934,9 @@ const SPLOTCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 64
 						: -1;
 					var nextIdx = newIdx >= 0 ? newIdx : (procedures.length > 0 ? 0 : -1);
 
-					if (data.switchToIdx || data.switchToIdx === 0) {
+					if (viewingGlobalNamespace) {
+						switchToGlobalNamespace();
+					} else if (data.switchToIdx || data.switchToIdx === 0) {
 						switchProc(data.switchToIdx);
 					} else if (nextIdx >= 0) {
 						switchProc(nextIdx);
@@ -815,11 +989,32 @@ const SPLOTCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 64
 		}
 
 		// ── Toolbar ──────────────────────────────────────────────────────────────
-		$('btn-view').addEventListener('click', function () {
+		$('opt-view-script').addEventListener('click', function () {
+			closeMoreDropdown();
 			vscode.postMessage({ type: 'viewChangeScript' });
 		});
 		$('btn-copy-clean-sql').addEventListener('click', function () {
 			vscode.postMessage({ type: 'copyCleanSql' });
+		});
+		$('opt-global-namespace').addEventListener('click', function () {
+			closeMoreDropdown();
+			switchToGlobalNamespace();
+		});
+
+		outputHeader.addEventListener('click', function () {
+			OutputPanel.setExpanded(!outputExpanded);
+		});
+		outputTabMessages.addEventListener('click', function (e) {
+			e.stopPropagation();
+			outputTabMessages.classList.add('active');
+		});
+		btnRun.addEventListener('click', async function () {
+			OutputPanel.clearMessages();
+			OutputPanel.appendMessage('Running...');
+			OutputPanel.setExpanded(true);
+			const res = await runChangeScript();
+			OutputPanel.clearMessages();
+			res.messages.split('\n').forEach(m => OutputPanel.appendMessage(m));
 		});
 
 		// ── Search dialog ─────────────────────────────────────────────────────────
@@ -889,6 +1084,7 @@ const SPLOTCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 64
 		}
 
 		// ── Boot ──────────────────────────────────────────────────────────────────
+		OutputPanel.setExpanded(false);
 		vscode.postMessage({ type: 'ready' });
 
 	}); // end require

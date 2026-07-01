@@ -71,7 +71,7 @@ GO
 -- Create date: ${new Date().toSQLDateString()}
 -- Description:	
 -- =============================================
-ALTER PROCEDURE [dbo].[${name}]
+CREATE PROCEDURE [dbo].[${name}]
 	@MySpecialVariable BIT
 	,@Status INT = NULL OUTPUT
 	,@Message VARCHAR(255) = NULL OUTPUT
@@ -115,6 +115,8 @@ const DELIM_GENERATIVE_JS_START = '--------  #JS Start#      --------';
 const DELIM_GENERATIVE_JS_END = '--------  #JS End#        --------';
 const DELIM_GENERATIVE_OUTPUT_START = '--------  #Output Start#  --------';
 const DELIM_GENERATIVE_OUTPUT_END = '--------  #Output End#    --------';
+const DELIM_GLOBAL_JS_START = '--------  #Global Namespace Start#  --------';
+const DELIM_GLOBAL_JS_END = '--------  #Global Namespace End#    --------';
 const DELIM_CHIASM_CONSTRUCTION = '--------------------------------\n----  Chiasm Construction   ----\n--------------------------------';
 const CHIASM_CONSTRUCTION_RE = /^-{3,}[^\n]*\n[^\n]*\bConstruction\b[^\n]*\n-{3,}[^\n]*/m;
 const PROC_NAME_RE = /^(?:CREATE|ALTER|DROP)\s+PROCEDURE\s+(?:\[?dbo\]?\.)?\[?(\w+)\]?/im;
@@ -200,6 +202,31 @@ function buildGenerativeSection({ js, output, success, message }) {
 	return lines.join('\n');
 }
 
+function parseGlobalNamespaceSection(sectionText) {
+	const source = String(sectionText || '');
+	const startIdx = source.indexOf(DELIM_GLOBAL_JS_START);
+	if (startIdx < 0) return { globalNamespaceJs: '', remainder: source };
+	const endIdx = source.indexOf(DELIM_GLOBAL_JS_END, startIdx + DELIM_GLOBAL_JS_START.length);
+	if (endIdx < 0) return { globalNamespaceJs: '', remainder: source };
+
+	const jsStart = startIdx + DELIM_GLOBAL_JS_START.length;
+	const commentedJs = source.slice(jsStart, endIdx).trim();
+	const before = source.slice(0, startIdx);
+	const after = source.slice(endIdx + DELIM_GLOBAL_JS_END.length);
+	return {
+		globalNamespaceJs: uncommentSqlJs(commentedJs).trim(),
+		remainder: `${before}${after}`,
+	};
+}
+
+function buildGlobalNamespaceSection(js) {
+	return [
+		DELIM_GLOBAL_JS_START,
+		commentJsForSql(js || ''),
+		DELIM_GLOBAL_JS_END,
+	].join('\n');
+}
+
 let cachedRollbackGenerator = null;
 function getRollbackGenerator() {
 	if (cachedRollbackGenerator) return cachedRollbackGenerator;
@@ -215,11 +242,16 @@ function getRollbackGenerator() {
 	return cachedRollbackGenerator;
 }
 
-function runGenerativeScript(js) {
+function runGenerativeScript(js, globalNamespaceJs = '') {
+	const globalPrelude = String(globalNamespaceJs || '').trim();
 	const wrapped = `"use strict";\n(() => {\n${String(js || '')}\n})()`;
-	const script = new vm.Script(wrapped);
 	const sandbox = Object.create(null);
 	sandbox.generateRollbackScript = getRollbackGenerator();
+	if (globalPrelude) {
+		const preludeScript = new vm.Script(`"use strict";\n${globalPrelude}`);
+		preludeScript.runInNewContext(sandbox, { timeout: 1000 });
+	}
+	const script = new vm.Script(wrapped);
 	const result = script.runInNewContext(sandbox, { timeout: 1000 });
 
 	if (!result || typeof result !== 'object' || Array.isArray(result))
@@ -233,13 +265,13 @@ function runGenerativeScript(js) {
 	return { change: result.change, rollback: result.rollback };
 }
 
-function regenerateGenerativeProcedures(procedures) {
+function regenerateGenerativeProcedures(procedures, globalNamespaceJs = '') {
 	return procedures.map(p => {
 		if (p.changeType !== 'generative') return p;
 		const previousOutput = String(p.generativeOutput ?? p.edited ?? '');
-		const previousRollback = String(p.rollback ?? '');
+		const previousRollback = String(p.original ?? '');
 		try {
-			const generated = runGenerativeScript(p.generativeJs || '');
+			const generated = runGenerativeScript(p.generativeJs || '', globalNamespaceJs);
 			return {
 				...p,
 				edited: generated.change,
@@ -422,9 +454,13 @@ class ChangePair {
  */
 class ChangeScript {
 	#pairs;
+	#globalNamespaceJs;
 
 	/** @param {ChangePair[]} pairs */
-	constructor(pairs) { this.#pairs = [...pairs]; }
+	constructor(pairs, globalNamespaceJs = '') {
+		this.#pairs = [...pairs];
+		this.#globalNamespaceJs = String(globalNamespaceJs || '');
+	}
 
 	/**
 	 * Parse an entire document string into a ChangeScript.
@@ -435,13 +471,14 @@ class ChangeScript {
 	 * @returns {ChangeScript|null}
 	 */
 	static fromString(str) {
-		if (!str.trim()) return new ChangeScript([]);
+		if (!str.trim()) return new ChangeScript([], '');
 
 		const cm = CHIASM_CONSTRUCTION_RE.exec(str);
 		if (!cm) return null;   // no construction line → invalid
 
 		const rollbackSection = str.slice(0, cm.index);
-		const updateSection = str.slice(cm.index + cm[0].length);
+		const centerTail = str.slice(cm.index + cm[0].length);
+		const { globalNamespaceJs, remainder: updateSection } = parseGlobalNamespaceSection(centerTail);
 
 		const rollbackBlocks = ChangeScript.#parseSection(rollbackSection, 'rollback');
 		const updateBlocks = ChangeScript.#parseSection(updateSection, 'update');
@@ -460,7 +497,7 @@ class ChangeScript {
 			return null;
 		}
 
-		return new ChangeScript(pairs);
+		return new ChangeScript(pairs, globalNamespaceJs);
 	}
 
 	/**
@@ -474,7 +511,7 @@ class ChangeScript {
 	 *            updateOptions?: {}, rollbackOptions?: {} }[]} records
 	 * @returns {ChangeScript}
 	 */
-	static fromRecords(records) {
+	static fromRecords(records, globalNamespaceJs = '') {
 		const pairs = records.map(r => {
 			const updateRawText = r.changeType === 'generative'
 				? buildGenerativeSection({
@@ -488,12 +525,13 @@ class ChangeScript {
 			const rbBlock = new ChangeBlock('rollback', r.rollbackOptions || {}, r.original);
 			return new ChangePair(r.name, upBlock, rbBlock);
 		});
-		return new ChangeScript(pairs);
+		return new ChangeScript(pairs, globalNamespaceJs);
 	}
 
 	/** @returns {ChangePair[]} */
 	get pairs() { return [...this.#pairs]; }
 	get length() { return this.#pairs.length; }
+	get globalNamespaceJs() { return this.#globalNamespaceJs; }
 
 	/** Parse one section of the document into an ordered array of ChangeBlocks. */
 	static #parseSection(sectionText, type) {
@@ -518,12 +556,17 @@ class ChangeScript {
 	 * @returns {string}
 	 */
 	toString() {
-		if (!this.#pairs.length) return '';
+		const centerParts = [DELIM_CHIASM_CONSTRUCTION];
+		if (this.#globalNamespaceJs.trim()) {
+			centerParts.push(buildGlobalNamespaceSection(this.#globalNamespaceJs));
+		}
+		const centerStr = centerParts.join('\n\n');
+		if (!this.#pairs.length) return this.#globalNamespaceJs.trim() ? `${centerStr}\n` : '';
 		const rollbackStr = [...this.#pairs].reverse()
 			.map(p => p.rollbackBlock.toString()).join('\n\n');
 		const updateStr = this.#pairs
 			.map(p => p.updateBlock.toString()).join('\n\n');
-		return `${rollbackStr}\n\n${DELIM_CHIASM_CONSTRUCTION}\n\n${updateStr}\n`;
+		return `${rollbackStr}\n\n${centerStr}\n\n${updateStr}\n`;
 	}
 
 	/**
@@ -555,11 +598,11 @@ class ChangeScript {
 }
 
 /** Serialise a plain procedures array to the full document string. */
-function serializeDocument(procedures) {
-	return ChangeScript.fromRecords(procedures).toString();
+function serializeDocument(procedures, globalNamespaceJs = '') {
+	return ChangeScript.fromRecords(procedures, globalNamespaceJs).toString();
 }
 
-function buildCleanSqlDocument(procedures) {
+function buildCleanSqlDocument(procedures, globalNamespaceJs = '') {
 	const rollbackSql = [...procedures]
 		.reverse()
 		.map(p => String(p.original || '').trim())
@@ -567,9 +610,13 @@ function buildCleanSqlDocument(procedures) {
 	const changeSql = procedures
 		.map(p => String(p.edited || '').trim())
 		.filter(Boolean);
+	const centerParts = [DELIM_CHIASM_CONSTRUCTION];
+	if (String(globalNamespaceJs || '').trim()) {
+		centerParts.push(buildGlobalNamespaceSection(globalNamespaceJs));
+	}
 	return [
 		...rollbackSql,
-		DELIM_CHIASM_CONSTRUCTION,
+		centerParts.join('\n\n'),
 		...changeSql
 	].join('\n\n');
 }
@@ -692,6 +739,7 @@ class SqlChangeScriptEditorProvider {
 		panel.webview.html = getWebviewHtml(context, panel, document);
 
 		let procedures = parsed.toProcedureRecords();
+		let globalNamespaceJs = parsed.globalNamespaceJs || '';
 		let suppressCnt = 0;
 		let switchToIndex = null;
 
@@ -699,6 +747,7 @@ class SqlChangeScriptEditorProvider {
 			panel.webview.postMessage({
 				type: 'init',
 				procedures,
+				globalNamespaceJs,
 				switchToIdx: (switchToIndex) ? switchToIndex : undefined,
 				rollbackVisible: context.globalState.get('rollbackVisible', true),
 			});
@@ -712,7 +761,7 @@ class SqlChangeScriptEditorProvider {
 		 */
 		const applyEdit = async (newProcs) => {
 			procedures = newProcs;
-			const newText = serializeDocument(procedures);
+			const newText = serializeDocument(procedures, globalNamespaceJs);
 			if (newText === document.getText()) return;
 			const edit = new vscode.WorkspaceEdit();
 			edit.replace(
@@ -736,6 +785,7 @@ class SqlChangeScriptEditorProvider {
 			const reparsed = ChangeScript.fromString(document.getText());
 			if (reparsed === null) return;  // invalid edit — ignore, don't clobber in-memory state
 			procedures = reparsed.toProcedureRecords();
+			globalNamespaceJs = reparsed.globalNamespaceJs || '';
 			postInit();
 		}
 		const docSub = vscode.workspace.onDidChangeTextDocument(refreshFromDocument);
@@ -744,8 +794,8 @@ class SqlChangeScriptEditorProvider {
 		// This is the only path that writes edited procedure content to the file.
 		const saveSub = vscode.workspace.onWillSaveTextDocument(e => {
 			if (e.document.uri.toString() !== document.uri.toString()) return;
-			procedures = regenerateGenerativeProcedures(procedures);
-			const newText = serializeDocument(procedures);
+			procedures = regenerateGenerativeProcedures(procedures, globalNamespaceJs);
+			const newText = serializeDocument(procedures, globalNamespaceJs);
 			if (newText === document.getText()) return;
 			e.waitUntil(Promise.resolve([
 				new vscode.TextEdit(
@@ -795,6 +845,11 @@ class SqlChangeScriptEditorProvider {
 					const p = procedures.find(x => x.name === msg.name);
 					if (!p || p.changeType !== 'generative') break;
 					p.generativeJs = msg.body;
+					break;
+				}
+
+				case 'editGlobalNamespaceJs': {
+					globalNamespaceJs = String(msg.body || '');
 					break;
 				}
 
@@ -1048,7 +1103,7 @@ class SqlChangeScriptEditorProvider {
 				}
 
 				case 'copyCleanSql': {
-					const cleanSql = buildCleanSqlDocument(procedures);
+					const cleanSql = buildCleanSqlDocument(procedures, globalNamespaceJs);
 					await vscode.env.clipboard.writeText(cleanSql);
 					vscode.window.showInformationMessage('Copied clean SQL to clipboard.');
 					break;
@@ -1065,6 +1120,19 @@ class SqlChangeScriptEditorProvider {
 						type: 'showWarningMessageResponse',
 						uid,
 						response: (choice === btnText)
+					});
+				}
+
+				case 'runChangeScript': {
+					const { uid } = msg;
+					const cleanSql = buildCleanSqlDocument(procedures, globalNamespaceJs);
+					await new Promise(r => setTimeout(r, 600));
+					panel.webview.postMessage({
+						type: 'runChangeScriptResponse',
+						uid,
+						response: {
+							messages: `Didn't actually run ${cleanSql.split('\n').length} lines, but I could have!`
+						}
 					});
 				}
 			}
