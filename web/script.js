@@ -323,8 +323,8 @@ const SPLOTCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 64
 					// make results
 					res.recordsets.map(set => {
 						resultsContainer.appendChild(buildDOM(['div', { 'style': 'flex: 1;' },
-							[createTableFrom2DArray(set)],
-							['hr']
+							['hr', { 'style': 'opacity: 0.7;' }],
+							[createTableFrom2DArray(set)]
 						]));
 					})
 					

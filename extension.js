@@ -27,13 +27,19 @@ Date.prototype.toSQLDateString = function() {
  * @returns {Promise<string[]>}
  */
 async function searchProcedures(query) {
-	const dummy = [
-		'uspGetUserById', 'uspUpdateUserEmail', 'uspCreateOrder',
-		'uspGetOrderHistory', 'uspDeleteExpiredSessions',
-		'uspProcessPayment', 'uspSendNotification',
-	];
-	const q = (query || '').toLowerCase();
-	return dummy.filter(n => n.toLowerCase().includes(q));
+	try {
+		const res = await Database.query(`
+			SELECT 
+				name
+			FROM sys.procedures
+			WHERE name LIKE '%${query.toLowerCase()}%';
+		`);
+		const data = res.recordsets[0];
+		data.shift();
+		return data.map(a => a[0]);
+	} catch(e) {
+		return [];
+	}
 }
 
 /**
@@ -44,15 +50,19 @@ async function searchProcedures(query) {
  * @returns {Promise<string>}
  */
 async function fetchProcedure(name) {
-	return [
-		`ALTER PROCEDURE [dbo].[${name}]`,
-		`AS`,
-		`BEGIN`,
-		`    SET NOCOUNT ON;`,
-		`    -- TODO: replace with actual fetch from modules/Database.js`,
-		`    SELECT 1 AS Result`,
-		`END`,
-	].join('\n');
+	try {
+		const res = await Database.query(`
+			SELECT ROUTINE_DEFINITION
+			FROM information_schema.ROUTINES
+			WHERE SPECIFIC_NAME = '${name}'
+		`);
+		console.log(res.recordsets);
+		return 'SET ANSI_NULLS ON\nGO\nSET QUOTED_IDENTIFIER ON\nGO\n\n' +
+			res.recordsets[0][1][0].trim().replace('\nCREATE PROCEDURE', '\nALTER PROCEDURE')
+		+ '\nGO';
+	} catch(e) {
+		return '';
+	}
 }
 
 function makeNewProcedure(name) {
@@ -98,16 +108,91 @@ GO
  * @returns {Promise<string[]>}
  */
 async function searchTables(query) {
-	// TODO: replace with actual call to modules/Database.js
-	const dummy = [
-		'Activity', 'ActivityHistory',
-		'Contact', 'ContactHistory',
-		'Order', 'OrderHistory',
-		'Product', 'ProductHistory',
-		'User', 'UserHistory',
-	];
-	const q = (query || '').toLowerCase();
-	return dummy.filter(n => n.toLowerCase().includes(q));
+	try {
+		const res = await Database.query(`
+			SELECT TABLE_NAME
+			FROM information_schema.tables
+			WHERE TABLE_NAME LIKE '%${query}%';
+		`);
+		const data = res.recordsets[0];
+		data.shift();
+		return data.map(a => a[0]);
+	} catch(e) {
+		return [];
+	}
+}
+
+function makeAddColumnToTableChangeAndRollback(o) {
+	const { table, columnName, columnType, defaultVal } = o;
+	const T = table[0].toLowerCase();
+	const isNullable = !defaultVal || defaultVal.toLowerCase() === 'null' || defaultVal === null;
+	const updateSql  = `
+-- create column and assign default value
+ALTER TABLE ${table} ADD ${columnName} ${columnType} NULL;
+GO
+UPDATE ${table} SET ${columnName} = ${isNullable ? 'NULL' : defaultVal};
+GO
+${isNullable ? '' :
+`ALTER TABLE ${table} ALTER COLUMN ${columnName} ${columnType} NOT NULL;
+GO`
+}
+
+-- create history table
+CREATE TABLE [dbo].[${table}${columnName}History] (
+    [${table}${columnName}HistoryId] [int] IDENTITY(1,1) NOT NULL,
+    [${table}Id] [int] NOT NULL,
+    [${columnName}] [bit]${isNullable ? ' NOT NULL' : ''},
+    [CreatedBy] [uniqueidentifier] NOT NULL,
+    [CreatedDate] [datetime] NOT NULL
+) ON [PRIMARY]
+GO
+
+
+-- add foreign key constraint
+ALTER TABLE [dbo].[${table}${columnName}History]  WITH CHECK ADD  CONSTRAINT [FK_${table}${columnName}History_${table}] FOREIGN KEY([${table}Id])
+    REFERENCES [dbo].[${table}] ([${table}Id])
+GO
+ALTER TABLE [dbo].[${table}${columnName}History] CHECK CONSTRAINT [FK_${table}${columnName}History_${table}]
+GO
+
+
+-- add initial historical records
+INSERT INTO ${table}${columnName}History (
+    ${table}Id
+    ,${columnName}
+    ,CreatedBy
+    ,CreatedDate
+)
+SELECT
+    ${T}.${table}Id
+    ,${T}.${columnName}
+    ,${T}.CreatedBy
+    ,${T}.CreatedDate
+FROM [${table}] AS ${T};
+GO
+	`.trim();
+	
+	const rollbackSql = `
+-- drop history table foreign key constraint
+IF EXISTS(SELECT * FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS WHERE CONSTRAINT_NAME = 'FK_${table}${columnName}History_${table}') BEGIN
+    ALTER TABLE [dbo].[${table}${columnName}History] DROP CONSTRAINT [FK_${table}${columnName}History_${table}]
+END
+GO
+
+-- drop history table
+IF EXISTS(SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='${table}${columnName}History') BEGIN
+    DROP TABLE ${table}${columnName}History;
+END
+GO
+
+-- drop column
+IF EXISTS(SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='${table}' AND COLUMN_NAME='${columnName}') BEGIN
+    ALTER TABLE [${table}] DROP COLUMN ${columnName};
+END
+GO
+	`.trim();
+
+	return { updateSql, rollbackSql };
 }
 
 
@@ -912,9 +997,7 @@ class SqlChangeScriptEditorProvider {
 						vscode.window.showWarningMessage(`A change named "${name}" already exists.`);
 						break;
 					}
-					// TODO: populate edited/original with real SQL via modules/Database.js
-					const updateSql  = `-- TODO: Add column ${columnName} (${columnType}) to ${table}\n-- defaultVal: ${defaultVal || 'none'}`;
-					const rollbackSql = `-- TODO: Rollback column ${columnName} from ${table}`;
+					const { updateSql, rollbackSql } = makeAddColumnToTableChangeAndRollback(msg);
 					await applyEdit([...procedures, {
 						name,
 						original: rollbackSql,
@@ -931,9 +1014,9 @@ class SqlChangeScriptEditorProvider {
 
 				case 'fetchProcedure': {
 					if (procedures.some(p => p.name === msg.name)) break;
-					const rawBody = await fetchProcedure(msg.name);
+					const original = await fetchProcedure(msg.name);
 					await applyEdit([...procedures, {
-						name: msg.name, original: rawBody, edited: rawBody, isNew: false,
+						name: msg.name, original, edited: original, isNew: false,
 						changeType: 'procedure',
 						updateOptions: {}, rollbackOptions: {},
 					}]);
