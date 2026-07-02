@@ -6,7 +6,9 @@
   "engines": {
     "vscode": "^1.74.0"
   },
-  "categories": ["Other"],
+  "categories": [
+    "Other"
+  ],
   "activationEvents": [],
   "main": "./extension.js",
   "contributes": {
@@ -15,10 +17,15 @@
         "viewType": "sqlChangeScript.editor",
         "displayName": "Becker Change Scripter",
         "selector": [
-          { "filenamePattern": "*.sql" }
+          {
+            "filenamePattern": "*.sql"
+          }
         ],
         "priority": "default"
       }
     ]
+  },
+  "dependencies": {
+    "mssql": "^12.6.0"
   }
 }
