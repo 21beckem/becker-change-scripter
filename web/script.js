@@ -1,3 +1,43 @@
+function buildDOM(structure, pNode) {
+	if(!Array.isArray(structure))
+		throw new TypeError('structure must be an instance of Array.');
+	if(!!pNode && !(pNode instanceof Node))
+		throw new TypeError('pNode must ba an instance of Node.');
+	
+	let node = null;
+	//try to make the HTMLElement node
+	if(typeof structure[0] === 'string') {
+		try {
+			node = document.createElement(structure[0]);
+		}
+		catch (err) {
+			throw new TypeError('Unable to create HTMLElement of type: '+ structure[0]);
+		}
+	}
+	else if(structure[0] instanceof Node) {
+		node = structure[0];
+	}
+	else throw new TypeError('index 0 of structure must be a valid HTMLElement tag name or HTMLElement instance.');
+	for(let i = 1; i< structure.length; i++) {
+		//recurse for array values
+		if(Array.isArray(structure[i]))
+			buildDOM(structure[i], node);
+		//object values set attributes of the node defined at index 0
+		else if(typeof structure[i] === 'object')
+			for(let p in structure[i]) {
+				if(typeof structure[i][p] === 'string')
+					node.setAttribute(p, structure[i][p]);
+			}
+		//string values are used as text nodes
+		else if(typeof structure[i] === 'string')
+			node.appendChild(document.createTextNode(structure[i]));
+	}
+	if(pNode)
+		pNode.appendChild(node);
+		
+	return pNode || node;
+}
+
 const SPLOTCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 640"><!--!Font Awesome Free v7.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free Copyright 2026 Fonticons, Inc.--><path d="M272.5 126.3L300.6 89.4C312.8 73.4 331.8 64 352 64C380.5 64 405.6 82.7 413.8 110L431.6 169.4C441.9 203.8 467.7 231.4 501.4 244L541.2 258.9C562.1 266.8 576 286.8 576 309.1C576 326 568.1 341.9 554.5 352L487.2 402.5C462.9 420.7 450 450.4 453.4 480.6L455.9 503.3C460.2 542 429.9 575.9 390.9 575.9C376.1 575.9 361.6 570.8 350 561.6L294.7 517.3C290.2 513.7 285.4 510.6 280.2 508.1C264.4 500.2 246.5 497.7 229.2 500.8L146.4 515.9C111.8 522.2 80 495.6 80 460.5C80 447.3 84.7 434.5 93.1 424.3L104.3 410.9C118.9 393.5 126.9 371.5 126.9 348.8C126.9 330 121.4 311.6 111.1 295.8L72.8 237.5C67.1 228.7 64 218.4 64 207.9C64 174.5 94.1 149.1 127 154.7L178.3 163.4C214.2 169.5 250.5 155.2 272.5 126.3z"/></svg>`;
 (function () {
 	'use strict';
@@ -29,7 +69,6 @@ const SPLOTCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 64
 				const uid = crypto.randomUUID();
 				const listener = (event) => {
 					const msg = event.data;
-					debugger;
 					if (msg.type !== 'runChangeScriptResponse' || msg.uid !== uid) return;
 					window.removeEventListener('message', listener);
 					resolve(msg.response);
@@ -84,11 +123,6 @@ const SPLOTCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 64
 			validationBanner     = $('validation-banner'),
 			ctxMenuEl            = $('context-menu'),
 			addDropdown          = $('add-dropdown'),
-			outputPanel          = $('output-panel'),
-			outputHeader         = $('output-header'),
-			outputMessages       = $('output-messages'),
-			outputTabMessages    = $('output-tab-messages'),
-			outputToggleIndicator = $('output-toggle-indicator'),
 			searchOverlay        = $('search-overlay'),
 			searchView           = $('search-view'),
 			createView           = $('create-view'),
@@ -205,22 +239,127 @@ const SPLOTCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 64
 			);
 		}
 
-		const OutputPanel = {
-			setExpanded: (expanded) => {
-				outputExpanded = !!expanded;
-				outputPanel.classList.toggle('collapsed', !outputExpanded);
-				outputToggleIndicator.innerHTML = outputExpanded ? '&#x25BC;' : '&#x25B2;';
-			},
-			appendMessage: (message) => {
-				var stamp = new Date().toLocaleTimeString();
-				var line = '[' + stamp + '] ' + message;
-				if (outputMessages.textContent) outputMessages.textContent += '\n';
-				outputMessages.textContent += line;
-			},
-			clearMessages: () => {
-				outputMessages.textContent = '';
+		const OutputPanel = (()=>{
+			const panelNode         = $('output-panel');
+			const headerNode        = $('output-header');
+			const messagesContainer = $('output-messages');
+			const messagesTabNode   = $('output-tab-messages');
+			const resultsContainer  = $('output-results');
+			const resultsTabNode    = $('output-tab-results');
+			const toggleArrowNode   = $('output-toggle-indicator');
+
+			function createTableFrom2DArray(dataMatrix) {
+				const [headers, ...rows] = dataMatrix;
+
+				const table = document.createElement('table');
+				table.className = 'result-table';
+
+				const thead = document.createElement('thead');
+				const headerRow = document.createElement('tr');
+
+				headers.forEach(headerText => {
+					const th = document.createElement('th');
+					th.textContent = headerText;
+					headerRow.appendChild(th);
+				});
+
+				thead.appendChild(headerRow);
+				table.appendChild(thead);
+
+				const tbody = document.createElement('tbody');
+
+				rows.forEach(rowData => {
+					const row = document.createElement('tr');
+
+					rowData.forEach(cellData => {
+						const td = document.createElement('td');
+						td.textContent = cellData;
+						row.appendChild(td);
+					});
+					tbody.appendChild(row);
+				});
+
+				table.appendChild(tbody);
+				return table;
 			}
-		};
+
+			const tools = {
+				setExpanded: (expanded) => {
+					outputExpanded = !!expanded;
+					panelNode.classList.toggle('collapsed', !outputExpanded);
+					toggleArrowNode.innerHTML = outputExpanded ? '&#x25BC;' : '&#x25B2;';
+				},
+				appendMessage: (o) => {
+					if (typeof o !== 'object' || o === null)
+						throw new TypeError('o must be an object literal.');
+					const { type, message } = o;
+	
+					const color = {
+						error: 'red',
+						info: 'inherit'
+					};
+					const line = buildDOM(['div', {
+						'style': `color: ${color[type] ?? 'unset' };`
+					},
+						['span', { 'style': 'opacity: 0.6; margin-right: 0.7em;' },
+							`[${new Date().toLocaleTimeString()}]`
+						],
+						['span', message]
+					]);
+					messagesContainer.appendChild(line);
+				},
+				clear: () => {
+					Array.from(messagesContainer.childNodes).forEach(c => c?.remove());
+					Array.from(resultsContainer.childNodes).forEach(c => c?.remove());
+				},
+				displaySQLResponse: (res) => {
+					if (typeof res !== 'object' || res === null)
+						throw new TypeError('response must be an object literal.');
+					
+					// make messages
+					tools.clear();
+					res.messages.forEach(m => tools.appendMessage(m));
+					
+					// make results
+					res.recordsets.map(set => {
+						resultsContainer.appendChild(buildDOM(['div', { 'style': 'flex: 1;' },
+							[createTableFrom2DArray(set)],
+							['hr']
+						]));
+					})
+					
+					// show correct tab
+					tools.setOpenPanel(res.recordsets.length > 0 ? 'results' : 'messages');
+				},
+				setOpenPanel: (panelName) => {
+					if (!['messages', 'results'].includes(panelName))
+						throw new TypeError('invalid panel name.');
+					
+					messagesTabNode.classList.toggle('active', panelName === 'messages');
+					messagesContainer.style.display = (panelName === 'messages') ? 'block' : 'none';
+					resultsTabNode.classList.toggle('active', panelName === 'results');
+					resultsContainer.style.display = (panelName === 'results') ? 'flex' : 'none';
+				}
+			};
+
+			messagesTabNode.addEventListener('click', function (e) {
+				e.stopPropagation();
+				tools.setExpanded(true);
+				tools.setOpenPanel('messages');
+			});
+			resultsTabNode.addEventListener('click', function (e) {
+				e.stopPropagation();
+				tools.setExpanded(true);
+				tools.setOpenPanel('results');
+			});
+
+			tools.setOpenPanel('messages');
+
+			headerNode.addEventListener('click', function () {
+				tools.setExpanded(!outputExpanded);
+			});
+			return tools;
+		})();
 
 		// ── Display mode ────────────────────────────────────────────────────────
 		function getCurrentMode() {
@@ -454,7 +593,7 @@ const SPLOTCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 64
 			leftResizeState = null;
 		});
 
-		window.addEventListener('resize', function () {
+		window.addEventListener('resize', function(){
 			globalNamespaceEditor.layout();
 			if (currentIdx < 0 || !isGenerativeProc(procedures[currentIdx])) return;
 			setGenerativeSplitByRatio(0.5);
@@ -1001,20 +1140,13 @@ const SPLOTCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 64
 			switchToGlobalNamespace();
 		});
 
-		outputHeader.addEventListener('click', function () {
-			OutputPanel.setExpanded(!outputExpanded);
-		});
-		outputTabMessages.addEventListener('click', function (e) {
-			e.stopPropagation();
-			outputTabMessages.classList.add('active');
-		});
 		btnRun.addEventListener('click', async function () {
-			OutputPanel.clearMessages();
-			OutputPanel.appendMessage('Running...');
+			OutputPanel.clear();
+			OutputPanel.appendMessage({ type: 'info', message: 'Running...' });
 			OutputPanel.setExpanded(true);
+			OutputPanel.setOpenPanel('messages');
 			const res = await runChangeScript();
-			OutputPanel.clearMessages();
-			res.messages.split('\n').forEach(m => OutputPanel.appendMessage(m));
+			OutputPanel.displaySQLResponse(res);
 		});
 
 		// ── Search dialog ─────────────────────────────────────────────────────────

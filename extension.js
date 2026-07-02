@@ -1,5 +1,10 @@
 'use strict';
 
+const Database = (()=>{
+	const config = require('./config.json');
+	const Database = require('./database');
+	return new Database(config);
+})();
 const vscode = require('vscode');
 const path = require('path');
 const fs = require('fs');
@@ -1126,13 +1131,10 @@ class SqlChangeScriptEditorProvider {
 				case 'runChangeScript': {
 					const { uid } = msg;
 					const cleanSql = buildCleanSqlDocument(procedures, globalNamespaceJs);
-					await new Promise(r => setTimeout(r, 600));
 					panel.webview.postMessage({
 						type: 'runChangeScriptResponse',
 						uid,
-						response: {
-							messages: `Didn't actually run ${cleanSql.split('\n').length} lines, but I could have!`
-						}
+						response: await Database.query(cleanSql)
 					});
 				}
 			}
@@ -1141,8 +1143,8 @@ class SqlChangeScriptEditorProvider {
 }
 
 // ─── Activate ─────────────────────────────────────────────────────────────────
-
 function activate(context) {
+	Database.connect();
 	const roProvider = new ReadonlyContentProvider();
 	context.subscriptions.push(
 		vscode.workspace.registerTextDocumentContentProvider(
@@ -1152,5 +1154,8 @@ function activate(context) {
 		SqlChangeScriptEditorProvider.register(context, roProvider)
 	);
 }
+function deactivate() {
+	Database.close();
+}
 
-module.exports = { activate };
+module.exports = { activate, deactivate };
