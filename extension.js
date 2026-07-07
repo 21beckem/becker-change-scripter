@@ -688,7 +688,7 @@ class ChangeScript {
 }
 
 /** Serialise a plain procedures array to the full document string. */
-function serializeDocument(procedures) {
+function serializeDocument(procedures, globalNamespaceJs) {
 	return ChangeScript.fromRecords(procedures, globalNamespaceJs).toString();
 }
 
