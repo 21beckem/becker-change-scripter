@@ -64,19 +64,24 @@ const SPLOTCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 64
 			});
 		};
 
-		const runChangeScript = () => {
-			return new Promise(resolve => {
+		const runSQL = async (runType) => {
+			OutputPanel.clear();
+			OutputPanel.appendMessage({ type: 'info', message: 'Running...' });
+			OutputPanel.setExpanded(true);
+			OutputPanel.setOpenPanel('messages');
+			const res = await new Promise(resolve => {
 				const uid = crypto.randomUUID();
 				const listener = (event) => {
 					const msg = event.data;
-					if (msg.type !== 'runChangeScriptResponse' || msg.uid !== uid) return;
+					if (msg.type !== `${runType}--response` || msg.uid !== uid) return;
 					window.removeEventListener('message', listener);
 					resolve(msg.response);
 				}
 				window.addEventListener('message', listener);
 				
-				vscode.postMessage({ type: 'runChangeScript', uid });
+				vscode.postMessage({ type: runType, uid });
 			});
+			OutputPanel.displaySQLResponse(res);
 		};
 
 		// ── Global display state ───────────────────────────────────────────────
@@ -119,6 +124,7 @@ const SPLOTCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 64
 			btnShowDiff          = $('btn-toggle-show-diff'),
 			btnEditable          = $('btn-toggle-editable'),
 			btnRun               = $('btn-run'),
+			runDropdown          = $('run-dropdown'),
 			moreDropdown         = $('more-dropdown'),
 			validationBanner     = $('validation-banner'),
 			ctxMenuEl            = $('context-menu'),
@@ -890,6 +896,7 @@ const SPLOTCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 64
 		$('btn-add').addEventListener('click', function (e) {
 			e.stopPropagation();
 			closeMoreDropdown();
+			closeRunDropdown();
 			if (addDropdown.style.display === 'block') {
 				closeAddDropdown();
 				return;
@@ -911,6 +918,7 @@ const SPLOTCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 64
 		$('btn-more').addEventListener('click', function (e) {
 			e.stopPropagation();
 			closeAddDropdown();
+			closeRunDropdown();
 			if (moreDropdown.style.display === 'block') {
 				closeMoreDropdown();
 				return;
@@ -927,6 +935,36 @@ const SPLOTCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 64
 		function closeMoreDropdown() {
 			moreDropdown.style.display = 'none';
 		}
+
+		$('btn-open-run-options').addEventListener('click', function (e) {
+			e.stopPropagation();
+			closeAddDropdown();
+			closeMoreDropdown();
+			if (runDropdown.style.display === 'block') {
+				closeRunDropdown();
+				return;
+			}
+			var rect = $('btn-open-run-options').parentElement.getBoundingClientRect();
+			runDropdown.style.display = 'block';
+			runDropdown.style.left = '-9999px';
+			var dw = runDropdown.offsetWidth || 210;
+			var x  = Math.min(rect.left, window.innerWidth - dw - 6);
+			runDropdown.style.left = x + 'px';
+			runDropdown.style.top  = (rect.bottom + 4) + 'px';
+		});
+
+		function closeRunDropdown() {
+			runDropdown.style.display = 'none';
+		}
+
+		$('opt-run-just-rollback').addEventListener('click', function () {
+			closeRunDropdown();
+			runSQL('runChangeScript-justRollback');
+		});
+		$('opt-run-just-change').addEventListener('click', function () {
+			closeRunDropdown();
+			runSQL('runChangeScript-justChange');
+		});
 
 		// Option 1: Custom — blank entry, switch immediately
 		$('opt-custom').addEventListener('click', function () {
@@ -1140,14 +1178,7 @@ const SPLOTCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 64
 			switchToGlobalNamespace();
 		});
 
-		btnRun.addEventListener('click', async function () {
-			OutputPanel.clear();
-			OutputPanel.appendMessage({ type: 'info', message: 'Running...' });
-			OutputPanel.setExpanded(true);
-			OutputPanel.setOpenPanel('messages');
-			const res = await runChangeScript();
-			OutputPanel.displaySQLResponse(res);
-		});
+		btnRun.addEventListener('click', () => runSQL('runChangeScript') );
 
 		// ── Search dialog ─────────────────────────────────────────────────────────
 		$('search-close').addEventListener('click', closeProcSearch);

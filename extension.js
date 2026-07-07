@@ -688,27 +688,27 @@ class ChangeScript {
 }
 
 /** Serialise a plain procedures array to the full document string. */
-function serializeDocument(procedures, globalNamespaceJs = '') {
+function serializeDocument(procedures) {
 	return ChangeScript.fromRecords(procedures, globalNamespaceJs).toString();
 }
 
-function buildCleanSqlDocument(procedures, globalNamespaceJs = '') {
+function buildCleanSqlRollback(procedures) {
 	const rollbackSql = [...procedures]
 		.reverse()
 		.map(p => String(p.original || '').trim())
 		.filter(Boolean);
+	return rollbackSql.join('\n\n');
+}
+function buildCleanSqlChange(procedures) {
 	const changeSql = procedures
 		.map(p => String(p.edited || '').trim())
 		.filter(Boolean);
-	const centerParts = [DELIM_CHIASM_CONSTRUCTION];
-	if (String(globalNamespaceJs || '').trim()) {
-		centerParts.push(buildGlobalNamespaceSection(globalNamespaceJs));
-	}
-	return [
-		...rollbackSql,
-		centerParts.join('\n\n'),
-		...changeSql
-	].join('\n\n');
+	return changeSql.join('\n\n');
+}
+function buildCleanSqlDocument(procedures) {
+	return buildCleanSqlRollback(procedures) + '\n\n'
+	+ DELIM_CHIASM_CONSTRUCTION + '\n\n'
+	+ buildCleanSqlChange(procedures);
 }
 
 // ─── Plain-text fallback HTML (used for git:// diff views) ───────────────────
@@ -1213,9 +1213,29 @@ class SqlChangeScriptEditorProvider {
 
 				case 'runChangeScript': {
 					const { uid } = msg;
-					const cleanSql = buildCleanSqlDocument(procedures, globalNamespaceJs);
+					const cleanSql = buildCleanSqlDocument(procedures);
 					panel.webview.postMessage({
-						type: 'runChangeScriptResponse',
+						type: 'runChangeScript--response',
+						uid,
+						response: await Database.query(cleanSql)
+					});
+				}
+
+				case 'runChangeScript-justRollback': {
+					const { uid } = msg;
+					const cleanSql = buildCleanSqlRollback(procedures);
+					panel.webview.postMessage({
+						type: 'runChangeScript-justRollback--response',
+						uid,
+						response: await Database.query(cleanSql)
+					});
+				}
+
+				case 'runChangeScript-justChange': {
+					const { uid } = msg;
+					const cleanSql = buildCleanSqlChange(procedures);
+					panel.webview.postMessage({
+						type: 'runChangeScript-justChange--response',
 						uid,
 						response: await Database.query(cleanSql)
 					});

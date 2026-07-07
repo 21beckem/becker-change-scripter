@@ -20,7 +20,20 @@
 			<!-- Left Panel -->
 			<div id="left-panel">
 				<div id="left-buttons">
-					<button class="btn center" id="btn-run">&#8657;&#x2002;Run</button>
+					<div style="display: flex; gap: .2em; position: relative;">
+						<button style="flex: 1;" class="btn center" id="btn-run">&#8657;&#x2002;Run</button>
+						<button style="width: unset;" class="btn center" id="btn-open-run-options">&#x25BE;</button>
+						<div id="run-dropdown">
+							<div class="add-option" id="opt-run-just-rollback">
+								<span class="add-option-title">Run only rollback</span>
+								<span class="add-option-desc">Will not run changes too</span>
+							</div>
+							<div class="add-option" id="opt-run-just-change">
+								<span class="add-option-title">Run only changes</span>
+								<span class="add-option-desc">Will not run rollback too</span>
+							</div>
+						</div>
+					</div>
 					<div id="more-wrapper">
 						<button class="btn secondary" id="btn-more">
 							<span>&#x22EE;&#x2002;More</span>

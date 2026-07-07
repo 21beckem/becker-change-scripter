@@ -796,6 +796,19 @@ main {
 	user-select: none;
 }
 
+#run-dropdown {
+	display: none;
+	position: fixed;
+	z-index: 400;
+	min-width: 210px;
+	background: var(--vscode-menu-background, #2d2d2d);
+	border: 1px solid var(--vscode-menu-border, #454545);
+	border-radius: 3px;
+	box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+	overflow: hidden;
+	user-select: none;
+}
+
 /* ── Add Change dropdown ──────────────────────── */
 #add-change-wrapper {
 	position: relative;
