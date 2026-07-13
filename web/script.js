@@ -81,7 +81,7 @@ const SPLOTCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 64
 				
 				vscode.postMessage({ type: runType, uid });
 			});
-			OutputPanel.displaySQLResponse(res);
+			OutputPanel.displaySQLResponse(res, false);
 		};
 
 		// ── Global display state ───────────────────────────────────────────────
@@ -318,12 +318,14 @@ const SPLOTCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 64
 					Array.from(messagesContainer.childNodes).forEach(c => c?.remove());
 					Array.from(resultsContainer.childNodes).forEach(c => c?.remove());
 				},
-				displaySQLResponse: (res) => {
+				displaySQLResponse: (res, clear) => {
 					if (typeof res !== 'object' || res === null)
 						throw new TypeError('response must be an object literal.');
+					if (typeof clear !== 'boolean')
+						throw new TypeError('clear must be a boolean.');
 					
 					// make messages
-					tools.clear();
+					if (clear) tools.clear();
 					res.messages.forEach(m => tools.appendMessage(m));
 					
 					// make results
@@ -845,6 +847,7 @@ const SPLOTCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 64
 			var proc = procedures[idx];
 			$('ctx-refetch').style.display = proc.isNew ? 'none'  : 'block';
 			$('ctx-rename').style.display  = proc.isNew ? 'block' : 'none';
+			$('ctx-duplicate').style.display  = proc.isNew ? 'block' : 'none';
 			ctxMenuEl.style.left    = '-9999px';
 			ctxMenuEl.style.display = 'block';
 			var mw = ctxMenuEl.offsetWidth  || 224;
@@ -883,6 +886,13 @@ const SPLOTCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 64
 			var name = procedures[ctxMenuIdx].name;
 			closeContextMenu();
 			vscode.postMessage({ type: 'renameProcedure', name: name });
+		});
+
+		$('ctx-duplicate').addEventListener('click', function () {
+			if (ctxMenuIdx < 0) return;
+			var name = procedures[ctxMenuIdx].name;
+			closeContextMenu();
+			vscode.postMessage({ type: 'duplicateProcedure', name: name });
 		});
 
 		$('ctx-remove').addEventListener('click', function () {

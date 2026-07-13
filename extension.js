@@ -52,9 +52,7 @@ async function searchProcedures(query) {
 async function fetchProcedure(name) {
 	try {
 		const res = await Database.query(`
-			SELECT ROUTINE_DEFINITION
-			FROM information_schema.ROUTINES
-			WHERE SPECIFIC_NAME = '${name}'
+			SELECT OBJECT_DEFINITION(OBJECT_ID('${name}'));
 		`);
 		console.log(res.recordsets);
 		return 'SET ANSI_NULLS ON\nGO\nSET QUOTED_IDENTIFIER ON\nGO\n\n' +
@@ -1183,6 +1181,18 @@ class SqlChangeScriptEditorProvider {
 					break;
 				}
 
+				// Duplicate a procedure from the change script.
+				case 'duplicateProcedure': {
+					const name = msg.name;
+					const clone = {...procedures.find(p => p.name === name) };
+					if (!clone) return;
+					clone.name += ' (copy)';
+					await applyEdit([...procedures, clone]);
+					switchToIndex = procedures.length - 1;
+					postInit();
+					break;
+				}
+
 				case 'viewChangeScript': {
 					// Re-open the same file with VS Code's built-in text editor so the
 					// user sees the raw, fully editable SQL without the custom editor.
@@ -1213,11 +1223,13 @@ class SqlChangeScriptEditorProvider {
 
 				case 'runChangeScript': {
 					const { uid } = msg;
-					const cleanSql = buildCleanSqlDocument(procedures);
 					panel.webview.postMessage({
 						type: 'runChangeScript--response',
 						uid,
-						response: await Database.query(cleanSql)
+						response: await Database.executeChangeScript(
+							buildCleanSqlRollback(procedures),
+							buildCleanSqlChange(procedures)
+						)
 					});
 				}
 
@@ -1227,7 +1239,7 @@ class SqlChangeScriptEditorProvider {
 					panel.webview.postMessage({
 						type: 'runChangeScript-justRollback--response',
 						uid,
-						response: await Database.query(cleanSql)
+						response: await Database.executeLargeQuery(cleanSql)
 					});
 				}
 
@@ -1237,7 +1249,7 @@ class SqlChangeScriptEditorProvider {
 					panel.webview.postMessage({
 						type: 'runChangeScript-justChange--response',
 						uid,
-						response: await Database.query(cleanSql)
+						response: await Database.executeLargeQuery(cleanSql)
 					});
 				}
 			}
